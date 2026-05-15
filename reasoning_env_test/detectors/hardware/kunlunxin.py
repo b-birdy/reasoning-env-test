@@ -9,11 +9,16 @@ from .base import BaseHardwareDetector
 class KunlunxinDetector(BaseHardwareDetector):
     """昆仑芯 XPU 检测器。
 
-    通过 xpu-smi 命令检测昆仑芯 P800 等 XPU 设备的数量和显存信息。
-    支持两种输出格式：
-      - key-value 格式（xpu-smi query -a）：每块卡一个信息块，Key: Value 形式
-      - table 格式（xpu-smi query）：表格形式，包含 DevID、Name、Memory 等列
+    通过 xpu-smi 命令检测昆仑芯 P800 等 XPU 设备。
+    真实服务器上实测格式：
+      - xpu-smi -q ：详细 key-value 格式，每块卡输出完整属性
+      - xpu-smi -m ：machine-readable 单行格式
+      - xpu-smi（无参数）：表格摘要（含 Memory-Usage 列）
     """
+
+    # xpu-smi machine-readable 字段位置
+    _MR_MEM_TOTAL_POS = 18  # mem_total (MB)
+    _MR_MEM_USED_POS = 17   # mem_used (MB)
 
     def detect(self) -> Dict[str, Any]:
         result = self._empty_result("kunlunxin")
@@ -21,11 +26,12 @@ class KunlunxinDetector(BaseHardwareDetector):
         if not shutil.which("xpu-smi"):
             return result
 
-        # 优先使用详细 key-value 格式
-        xpus = self._parse_xpu_smi_detailed()
+        # 优先级: xpu-smi -q (详细) > xpu-smi -m (机器可读) > xpu-smi (摘要表格)
+        xpus = self._parse_xpu_smi_q()
         if not xpus:
-            # 回退到 table 格式
-            xpus = self._parse_xpu_smi_table()
+            xpus = self._parse_xpu_smi_m()
+        if not xpus:
+            xpus = self._parse_xpu_smi_summary()
 
         if not xpus:
             return result
@@ -40,125 +46,197 @@ class KunlunxinDetector(BaseHardwareDetector):
         return result
 
     # ------------------------------------------------------------------
-    # Key-value 格式解析（xpu-smi query -a）
+    # xpu-smi -q : 详细 key-value 格式
     # ------------------------------------------------------------------
 
-    def _parse_xpu_smi_detailed(self) -> Optional[List[Dict[str, Any]]]:
-        """调用 xpu-smi query -a 并解析 key-value 格式输出。"""
+    def _parse_xpu_smi_q(self) -> Optional[List[Dict[str, Any]]]:
+        """调用 xpu-smi -q 并解析详细 key-value 输出。
+
+        典型输出：
+            ==============XPUSMI LOG==============
+
+            Timestamp                                 : Fri May 15 14:22:01 2026
+            Driver Version                            : 5.0.21.21
+            XPU-RT Version                            : 10.2
+
+            Attached XPUs                             : 8
+            XPU 00000000:29:00.0
+                Product Name                          : P800 OAM
+                ...
+                Memory Usage
+                    Total                             : 98304 MiB
+                    Used                              : 84504 MiB
+                    Free                              : 13800 MiB
+        """
         try:
             output = subprocess.check_output(
-                ["xpu-smi", "query", "-a"],
+                ["xpu-smi", "-q"],
                 text=True, timeout=15, stderr=subprocess.DEVNULL,
             )
         except (subprocess.SubprocessError, FileNotFoundError):
             return None
-        return self._parse_detailed_output(output)
+        return self._parse_q_output(output)
 
-    def _parse_detailed_output(self, output: str) -> Optional[List[Dict[str, Any]]]:
-        """解析 key-value 格式的 xpu-smi 输出。
-
-        典型输出：
-            Device Index: 0
-            Device Name: Kunlun XPU P800
-            Memory Total: 16384 MB
-
-            Device Index: 1
-            Device Name: Kunlun XPU P800
-            Memory Total: 16384 MB
-        """
+    def _parse_q_output(self, output: str) -> Optional[List[Dict[str, Any]]]:
+        """解析 xpu-smi -q 的 key-value 输出。"""
         xpus: List[Dict[str, Any]] = []
-        current: Dict[str, Any] = {}
+        current: Optional[Dict[str, Any]] = None
+        in_memory_section = False
 
-        for line in output.strip().splitlines():
-            line = line.strip()
-            if not line:
-                # 空行作为设备块分隔符
-                if current:
+        for line in output.splitlines():
+            stripped = line.strip()
+
+            # 检测 XPU 块开头: "XPU 00000000:29:00.0"
+            xpu_match = re.match(r"^XPU\s+(\S+)", stripped)
+            if xpu_match:
+                if current is not None:
                     xpus.append(current)
-                    current = {}
+                current = {"index": len(xpus), "name": "Kunlun XPU", "memory_total_gb": 0.0}
+                in_memory_section = False
                 continue
 
-            match = re.match(r"^(.+?)\s*:\s*(.+)$", line)
-            if not match:
+            if current is None:
+                # 跟踪 Memory Usage 部分
+                if stripped.rstrip(":") == "Memory Usage":
+                    in_memory_section = True
+                elif stripped and not stripped.startswith("=") and ":" not in stripped:
+                    in_memory_section = False
                 continue
 
-            key = match.group(1).strip().lower()
-            value = match.group(2).strip()
-            if not value:
+            # 跟踪 Memory Usage 部分
+            if stripped.rstrip(":") == "Memory Usage":
+                in_memory_section = True
+                continue
+            if stripped and not stripped.startswith("=") and ":" not in stripped:
+                # 非空行且不含冒号 -> 新部分标题
+                in_memory_section = False
+
+            # 解析 key: value
+            kv_match = re.match(r"^\s*(.+?)\s*:\s*(.+)$", line)
+            if not kv_match:
                 continue
 
-            # 检测到新的设备索引 -> 开始新块
-            if key in ("device index", "devid", "device id"):
-                if current:
-                    xpus.append(current)
-                idx_match = re.search(r"\d+", value)
-                current = {"index": int(idx_match.group()) if idx_match else 0}
-            elif "device name" in key or "device model" in key:
+            key = kv_match.group(1).strip()
+            value = kv_match.group(2).strip()
+
+            if key == "Product Name":
                 current["name"] = value
-            elif "memory total" in key or key == "memory":
+            elif in_memory_section and key == "Total":
                 current["memory_total_gb"] = self._parse_memory_to_gb(value)
 
-        if current:
+        if current is not None:
             xpus.append(current)
 
         return self._normalize_xpus(xpus)
 
     # ------------------------------------------------------------------
-    # Table 格式解析（xpu-smi query）
+    # xpu-smi -m : machine-readable 单行格式
     # ------------------------------------------------------------------
 
-    def _parse_xpu_smi_table(self) -> Optional[List[Dict[str, Any]]]:
-        """调用 xpu-smi query 并解析 table 格式输出。"""
+    def _parse_xpu_smi_m(self) -> Optional[List[Dict[str, Any]]]:
+        """调用 xpu-smi -m 并解析 machine-readable 输出。
+
+        每行格式（空格分隔）：
+            pci_addr board_id dev_id sn temp ... mem_used mem_total ...
+        其中 mem_total 在第 19 个字段（0-indexed: 18）。
+        """
         try:
             output = subprocess.check_output(
-                ["xpu-smi", "query"],
+                ["xpu-smi", "-m"],
                 text=True, timeout=15, stderr=subprocess.DEVNULL,
             )
         except (subprocess.SubprocessError, FileNotFoundError):
             return None
-        return self._parse_table_output(output)
-
-    def _parse_table_output(self, output: str) -> Optional[List[Dict[str, Any]]]:
-        """解析 table 格式的 xpu-smi 输出。
-
-        典型输出：
-            +--------+------------------+--------------+
-            | DevID  | Name             | Memory(MB)   |
-            +--------+------------------+--------------+
-            | 0      | Kunlun XPU P800  | 16384        |
-            | 1      | Kunlun XPU P800  | 16384        |
-            +--------+------------------+--------------+
-        """
-        lines = output.strip().splitlines()
-
-        # 定位表头行（包含 DevID 和 Name）
-        header_idx = None
-        for i, line in enumerate(lines):
-            if "|" in line and "DevID" in line and "Name" in line:
-                header_idx = i
-                break
-
-        if header_idx is None:
-            return None
 
         xpus: List[Dict[str, Any]] = []
-        # 数据行从 header + 2 开始（跳过表头分隔线）
-        for line in lines[header_idx + 2:]:
-            stripped = line.strip()
-            if not stripped or stripped.startswith("+"):
-                break
-
-            parts = [p.strip() for p in line.split("|")[1:-1]]
-            if len(parts) < 2:
+        for line in output.strip().splitlines():
+            parts = line.strip().split()
+            if len(parts) <= self._MR_MEM_TOTAL_POS:
                 continue
 
-            index = int(parts[0]) if parts[0].isdigit() else 0
-            name = parts[1]
-            memory = self._parse_memory_to_gb(parts[2]) if len(parts) >= 3 else 0.0
+            # mem_total at position 18 (MB)
+            try:
+                mem_total_mb = int(parts[self._MR_MEM_TOTAL_POS])
+            except (ValueError, IndexError):
+                mem_total_mb = 0
+
+            # 从引号中提取产品名（如 "P800 OAM"）
+            name = "Kunlun XPU"
+            name_match = re.search(r'"([^"]+)"', line)
+            if name_match:
+                name = name_match.group(1)
+
             xpus.append({
-                "index": index,
+                "index": len(xpus),
                 "name": name,
-                "memory_total_gb": memory,
+                "memory_total_gb": round(mem_total_mb / 1024, 2),
+            })
+
+        return self._normalize_xpus(xpus)
+
+    # ------------------------------------------------------------------
+    # xpu-smi（无参数）：摘要表格格式
+    # ------------------------------------------------------------------
+
+    def _parse_xpu_smi_summary(self) -> Optional[List[Dict[str, Any]]]:
+        """调用 xpu-smi（无参数）并解析摘要表格。
+
+        典型输出：
+            +------+------------+ ...
+            | XPU  Name        | ...
+            +------+------------+ ...
+            |   0  P800 OAM    | ...
+            | N/A   41C  ...   |  84504MiB / 98304MiB | ...
+        """
+        try:
+            output = subprocess.check_output(
+                ["xpu-smi"],
+                text=True, timeout=15, stderr=subprocess.DEVNULL,
+            )
+        except (subprocess.SubprocessError, FileNotFoundError):
+            return None
+        return self._parse_summary_output(output)
+
+    def _parse_summary_output(self, output: str) -> Optional[List[Dict[str, Any]]]:
+        """解析 xpu-smi 摘要表格输出。"""
+        xpus: List[Dict[str, Any]] = []
+        lines = output.splitlines()
+
+        # 查找表格行: 以 "|" 开头且第一个字段是数字
+        for line in lines:
+            stripped = line.strip()
+            if not stripped.startswith("|"):
+                continue
+            # 跳过表头/分隔行
+            if not stripped[1:].strip() or stripped.startswith("|=="):
+                continue
+
+            parts = [p.strip() for p in stripped.split("|")]
+            # 期望至少: | XPU_ID | Name | ... |  Used/Total | ... |
+            if len(parts) < 3:
+                continue
+
+            # 第一列数字为 XPU ID
+            first_col = parts[1]
+            if not first_col.isdigit():
+                continue
+
+            xpu_id = int(first_col)
+            name = parts[2] if len(parts) > 2 else "Kunlun XPU"
+
+            # 显存在 memory 列: "84504MiB / 98304MiB" 形式
+            memory_gb = 0.0
+            for part in parts:
+                mem_match = re.search(r"(\d+)\s*MiB\s*/\s*(\d+)\s*MiB", part)
+                if mem_match:
+                    total_mb = int(mem_match.group(2))
+                    memory_gb = round(total_mb / 1024, 2)
+                    break
+
+            xpus.append({
+                "index": xpu_id,
+                "name": name,
+                "memory_total_gb": memory_gb,
             })
 
         return self._normalize_xpus(xpus)
@@ -176,16 +254,18 @@ class KunlunxinDetector(BaseHardwareDetector):
             "16384 MiB"     -> 16.0
             "16 GB"         -> 16.0
             "16 GiB"        -> 16.0
-            "16384"         -> 16.0  （无单位时按 MB 处理）
+            "98304 MiB"     -> 96.0
         """
         value = value.strip()
-        match = re.search(r"([\d.]+)\s*(MB|GB|MiB|GiB)?", value, re.IGNORECASE)
+        match = re.search(r"([\d.]+)\s*(MB|GB|MiB|GiB|KB|KiB)?", value, re.IGNORECASE)
         if match:
             num = float(match.group(1))
             unit = (match.group(2) or "MB").upper()
             if unit in ("GB", "GIB"):
                 return round(num, 2)
-            # MiB 和 MiB 都按 1024 换算
+            if unit in ("KB", "KIB"):
+                return round(num / (1024 * 1024), 2)
+            # MB/MiB 都按 1024 换算
             return round(num / 1024, 2)
         return 0.0
 
