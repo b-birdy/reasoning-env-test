@@ -1,70 +1,68 @@
 """性能预估模块。
 
-基于硬件信息（统一格式字典列表），估算指定模型在多并发下的
-吞吐量（tok/s）和首包延迟（TTFT）。
+基于 GPU 规格信息，估算指定模型在多并发下的吞吐量（tok/s）和首包延迟（TTFT）。
 
 ⚠️ 重要提示
     所有数值均为 **理论估算值**，基于 40% 理论到实际性能折损。
-    参考基准为 NVIDIA A100 80GB 在 FP16 精度下对 7B 模型的
-    ~800 tok/s 实测数据。
-    **实际性能** 可能因硬件型号、驱动版本、软件栈、工作负载特征、
-    批处理策略等而与估算值存在显著差异。
+    LLM 推理解码阶段主要是 **内存绑定** 而非计算绑定。
     本模块的输出 **不可替代** 真实环境下的性能基准测试。
 """
 from typing import Any, Dict, List
+import json
+import os
+
 
 # ---------------------------------------------------------------------------
-# 基准参考值
+# 精度字节数
 # ---------------------------------------------------------------------------
-# FP16 基准: 单 GPU (NVIDIA A100 80GB) 对 7B 模型的 tok/s
-_BASE_TOK_PER_SEC: float = 800.0
-_BASE_PARAMS_B: float = 7.0
-# 每个请求的 KV cache 显存占用（7B FP16）
-_BASE_KV_CACHE_GB: float = 4.0
-
-# ---------------------------------------------------------------------------
-# 精度系数
-# ---------------------------------------------------------------------------
-# tok/s 缩放系数 —— 低位宽精度可提升计算吞吐
-_PRECISION_TOK_FACTOR: Dict[str, float] = {
-    "fp16": 1.0,
-    "int8": 1.2,
-    "int4": 1.5,
-}
-
-# KV cache 显存占用缩放系数 —— 低位宽精度减少 KV cache 占用
-_PRECISION_KV_FACTOR: Dict[str, float] = {
-    "fp16": 1.0,
-    "int8": 0.5,
-    "int4": 0.25,
+_PRECISION_BYTES: Dict[str, float] = {
+    "fp16": 2.0,
+    "int8": 1.0,
+    "int4": 0.5,
 }
 
 # ---------------------------------------------------------------------------
 # 理论到实际折损
 # ---------------------------------------------------------------------------
-# 40% 折损：实际吞吐 = 理论 × 0.6
 _DEGRADATION: float = 0.6
-# 延迟折损：实际延迟 = 理论 / 0.6 （延迟变高）
-_LATENCY_DEGRADATION: float = 1.0 / _DEGRADATION
+
+
+def _get_gpu_spec_path() -> str:
+    """获取 GPU 规格文件路径。"""
+    data_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+    return os.path.join(data_dir, "gpu_specs.json")
+
+
+def load_gpu_specs() -> Dict[str, Dict[str, Any]]:
+    """加载 GPU 规格字典。
+
+    返回
+    -------
+    Dict[str, Dict[str, Any]]
+        键为 GPU 型号 ID，值为包含规格的字典。
+    """
+    with open(_get_gpu_spec_path(), "r", encoding="utf-8") as f:
+        return json.load(f)
 
 
 def estimate_performance(
-    hardware_info: List[Dict[str, Any]],
+    gpu_spec: Dict[str, Any],
     model_params_b: float,
     precision: str,
     concurrency_levels: List[int],
+    gpu_count: int,
+    memory_bw_factor: float = 1.0,
+    rdma_latency_us: float = 5.0,
+    scenario: str = "single_node",
+    model_name: str = "",
+    deploy_desc: str = "",
 ) -> List[Dict[str, Any]]:
     """估算多并发下性能指标。
 
     参数
     ----------
-    hardware_info : List[Dict[str, Any]]
-        硬件统一格式字典列表。每个字典包含:
-        - type: 硬件类型（如 "nvidia", "amd", "cpu"）
-        - model: 型号名称
-        - memory_total_gb: 总显存/内存 (GB)
-        - compute_units: 计算单元数（GPU 个数 / CPU 核心数）
-        - details: 详细信息字典
+    gpu_spec : Dict[str, Any]
+        单张 GPU 的规格字典，来自 gpu_specs.json 查找。
 
     model_params_b : float
         模型参数量，以十亿（B）为单位。如 7B 则传入 7.0。
@@ -75,45 +73,63 @@ def estimate_performance(
     concurrency_levels : List[int]
         需要估算的并发级别列表，如 [4, 8, 16, 32, 64, 128]。
 
+    gpu_count : int
+        使用的 GPU 数量。
+
+    memory_bw_factor : float, optional
+        多节点内存带宽 overhead，默认为 1.0（无 overhead）。
+
+    rdma_latency_us : float, optional
+        RDMA 往返延迟（微秒），默认为 5.0。
+
+    scenario : str, optional
+        场景描述，如 "single_node" 或 "multi_node"，默认为 "single_node"。
+
+    model_name : str, optional
+        模型名称，用于结果展示，默认为空。
+
+    deploy_desc : str, optional
+        部署描述，用于结果展示，默认为空。
+
     返回
     -------
     List[Dict[str, Any]]
-        每个并发级别对应的性能指标字典，按 concurrency 升序排列:
+        每个并发级别对应的性能指标字典:
+        - scenario: 场景描述
+        - model_name: 模型名称
+        - deploy_desc: 部署描述
         - concurrency: 并发级别
-        - tok_per_sec: 系统总吞吐 (tokens/s)
+        - tok_per_sec_single: 单进程吞吐
+        - tok_per_sec_total: 总吞吐
         - ttft_p50_ms: 首包延迟中位数 (ms)
         - ttft_p99_ms: 首包延迟 P99 (ms)
-        - max_supported: 当前硬件可支持的最大并发数（由显存限制）
 
     异常
     ------
     ValueError
-        - hardware_info 为空
+        - gpu_spec 缺少必要字段
         - model_params_b <= 0
         - precision 不支持
         - concurrency_levels 为空或包含非正数
-
-    参考公式
-    ---------
-    tok/s = 基准_tok/s × (基准参数量 / 当前参数量) × 精度系数 × 0.6
-    TTFT_p50 = 200ms × (当前参数量 / 7B) × 并发^0.3 / 0.6
-    TTFT_p99 = TTFT_p50 × 2
-    最大并发 = Σ(显存) / (每个请求 KV cache 占用)
+        - gpu_count <= 0
     """
     # ── 参数校验 ──────────────────────────────────────────────────────
     precision = precision.strip().lower()
 
-    if not hardware_info:
-        raise ValueError("硬件信息列表不能为空（hardware_info is empty）")
+    required_fields = ["memory_bw_gbs", "fp16_tflops", "memory_gb"]
+    for field in required_fields:
+        if field not in gpu_spec:
+            raise ValueError(f"GPU 规格缺少必要字段: {field}")
+
     if model_params_b <= 0:
         raise ValueError(
             f"模型参数量必须为正数，当前值: {model_params_b} "
             "(model_params_b must be positive)"
         )
-    if precision not in _PRECISION_TOK_FACTOR:
+    if precision not in _PRECISION_BYTES:
         raise ValueError(
             f"不支持的精度 '{precision}'，可选: "
-            f"{list(_PRECISION_TOK_FACTOR.keys())}"
+            f"{list(_PRECISION_BYTES.keys())}"
         )
     if not concurrency_levels:
         raise ValueError("并发级别列表不能为空（concurrency_levels is empty）")
@@ -122,66 +138,54 @@ def estimate_performance(
             raise ValueError(
                 f"并发级别必须为正整数，当前值: {c}"
             )
+    if gpu_count <= 0:
+        raise ValueError("GPU 数量必须为正数")
 
-    # ── 汇总硬件资源 ──────────────────────────────────────────────────
-    total_compute_units: int = sum(
-        hw.get("compute_units", 0) for hw in hardware_info
-    )
-    total_memory_gb: float = sum(
-        hw.get("memory_total_gb", 0.0) for hw in hardware_info
-    )
+    # ── 计算核心指标 ──────────────────────────────────────────────────
+    bytes_per_param = _PRECISION_BYTES[precision]
+    # 单卡模型显存占用
+    model_size_per_gpu_gb = (model_params_b * bytes_per_param) / gpu_count
+    # 内存带宽受限的单卡解码吞吐 (tok/s)
+    memory_bw_per_gpu = gpu_spec["memory_bw_gbs"] * memory_bw_factor
+    max_tok_s_per_gpu = memory_bw_per_gpu / model_size_per_gpu_gb
+    # 应用折损
+    max_tok_s_per_gpu_actual = max_tok_s_per_gpu * _DEGRADATION
 
-    # ── 精度系数 ──────────────────────────────────────────────────────
-    tok_factor: float = _PRECISION_TOK_FACTOR[precision]
-    kv_factor: float = _PRECISION_KV_FACTOR[precision]
-
-    # ── 单计算单元理论 tok/s ────────────────────────────────────────
-    # 公式: 基准 × (基准参数量 / 当前参数量) × 精度系数
-    tok_per_unit = (
-        _BASE_TOK_PER_SEC
-        * (_BASE_PARAMS_B / model_params_b)
-        * tok_factor
-    )
-
-    # 应用 40% 折损 -> 实际 tok/s 每单元
-    tok_per_unit_actual = tok_per_unit * _DEGRADATION
-
-    # 多计算单元线性缩放 -> 系统总吞吐
-    system_tok_per_sec = tok_per_unit_actual * total_compute_units
-
-    # ── 每个请求 KV cache 显存占用 ──────────────────────────────────
-    kv_cache_per_request_gb = (
-        _BASE_KV_CACHE_GB
-        * (model_params_b / _BASE_PARAMS_B)
-        * kv_factor
-    )
-
-    # ── 最大并发（由显存限制）───────────────────────────────────────
-    if kv_cache_per_request_gb > 0 and total_memory_gb > 0:
-        max_supported: int = int(total_memory_gb / kv_cache_per_request_gb)
-    else:
-        max_supported = 0
+    # ── TTFT 计算 (Prefill 阶段) ──────────────────────────────────────
+    # Prefill 是计算绑定: params * 2 FLOPs / param
+    total_flops = model_params_b * 2 * 1e12
+    total_tflops = gpu_spec["fp16_tflops"] * gpu_count
+    utilization = 0.6
+    ttft_base_sec = total_flops / (total_tflops * 1e12 * utilization)
+    # 多节点网络延迟 overhead (约 5-10%)
+    network_overhead = 1.0 + (rdma_latency_us / 1e6) * 0.01 if gpu_count > 8 else 1.05
+    ttft_p50_ms = (ttft_base_sec * network_overhead) * 1000
+    ttft_p99_ms = ttft_p50_ms * 2.0
 
     # ── 逐并发级别计算 ────────────────────────────────────────────────
     results: List[Dict[str, Any]] = []
     for concurrency in sorted(concurrency_levels):
-        # 吞吐量：简化理论模型下与并发无关（假设批处理可充分合并）
-        tok_per_sec = system_tok_per_sec
+        # 只要有一定并发就可以达到接近饱和的吞吐
+        # 当并发很少时, 吞吐稍低, 但快速上升
+        if concurrency < 4:
+            scaling_factor = concurrency / 4.0
+        else:
+            scaling_factor = 1.0
+        # 微小的批处理效率提升在高并发时
+        batching_efficiency = 1.0 + (min(concurrency, 256) / 256) * 0.05
 
-        # 首包延迟 TTFT
-        # p50 ≈ 200ms × (当前参数量 / 7B) × 并发^0.3 / 0.6
-        ttft_base = 200.0 * (model_params_b / _BASE_PARAMS_B) * (
-            concurrency ** 0.3
-        )
-        ttft_p50_ms = ttft_base * _LATENCY_DEGRADATION
-        ttft_p99_ms = ttft_p50_ms * 2.0
+        tok_per_sec_total = max_tok_s_per_gpu_actual * gpu_count * scaling_factor * batching_efficiency
+        tok_per_sec_single = tok_per_sec_total / concurrency if concurrency > 0 else 0.0
 
         results.append({
+            "scenario": scenario,
+            "model_name": model_name,
+            "deploy_desc": deploy_desc,
             "concurrency": concurrency,
-            "tok_per_sec": round(tok_per_sec, 2),
+            "tok_per_sec_single": round(tok_per_sec_single, 2),
+            "tok_per_sec_total": round(tok_per_sec_total, 2),
             "ttft_p50_ms": round(ttft_p50_ms, 2),
             "ttft_p99_ms": round(ttft_p99_ms, 2),
-            "max_supported": max_supported,
         })
 
     return results
