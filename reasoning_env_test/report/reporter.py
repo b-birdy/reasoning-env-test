@@ -555,10 +555,7 @@ def _section_performance(performance: List[Dict[str, Any]]) -> str:
                 lines.append("⚠️ 未检测到 RDMA 设备或不满足多机部署条件。")
                 lines.append("")
             elif sc_key != "default" and sc_key == "single_node_multi":
-                lines.append("### 场景二：单机多卡分布式推理")
-                lines.append("")
-                lines.append("⚠️ 当前 GPU 卡数不足，不支持单机多卡分布式推理。")
-                lines.append("")
+                pass  # 多机场景已覆盖时，不再提示
             continue
 
         lines.append(f"### {scenario_titles[sc_key]}")
@@ -1321,10 +1318,7 @@ def generate_report(
     # ================================================================
     lines.append("## 6. 可部署模型推荐")
     lines.append("")
-    lines.append(
-        "根据服务器显存配置，以下模型可在当前环境中部署运行"
-        "（按参数量从大到小排序）。"
-    )
+    lines.append("")
     lines.append("")
     lines.append(_section_recommendation(recommendations))
     lines.append("")
@@ -1336,7 +1330,7 @@ def generate_report(
     # ================================================================
     lines.append("## 7. 性能预估")
     lines.append("")
-    lines.append("以下为各并发级别下的理论性能估算值。")
+    lines.append("基于服务器配置和推荐模型，分场景展示理论性能估算。")
     lines.append("")
     lines.append(_section_performance(performance))
     lines.append("")
