@@ -159,8 +159,7 @@ def estimate_performance(
     ttft_base_sec = total_flops / (total_tflops * 1e12 * utilization)
     # 多节点网络延迟 overhead (约 5-10%)
     network_overhead = 1.0 + (rdma_latency_us / 1e6) * 0.01 if gpu_count > 8 else 1.05
-    ttft_p50_ms = (ttft_base_sec * network_overhead) * 1000
-    ttft_p99_ms = ttft_p50_ms * 2.0
+    ttft_base_ms = ttft_base_sec * network_overhead * 1000
 
     # ── 逐并发级别计算 ────────────────────────────────────────────────
     results: List[Dict[str, Any]] = []
@@ -176,6 +175,12 @@ def estimate_performance(
 
         tok_per_sec_total = max_tok_s_per_gpu_actual * gpu_count * scaling_factor * batching_efficiency
         tok_per_sec_single = tok_per_sec_total / concurrency if concurrency > 0 else 0.0
+
+        # TTFT 随并发增加而增加（排队延迟）
+        # 低并发时接近纯 prefill 时间，高并发时排队延迟显著
+        queue_factor = 1.0 + (concurrency / 100.0) * 0.3  # 100并发时+30%
+        ttft_p50_ms = ttft_base_ms * queue_factor
+        ttft_p99_ms = ttft_p50_ms * (1.5 + (concurrency / 256.0) * 0.5)  # P99 = P50 * 1.5~2.0
 
         results.append({
             "scenario": scenario,

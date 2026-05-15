@@ -168,37 +168,40 @@ def main(argv: List[str] | None = None) -> int:
         gpu_specs = load_gpu_specs()
         gpu_spec = gpu_specs.get(gpu_type_id, gpu_specs["kunlunxin_p800"])
 
-        # 根据硬件情况选择场景
+        # 递进展示所有符合条件的场景（非互斥）
+        all_perf: List[Dict[str, Any]] = []
+
+        # 场景一：单机单卡推理（始终展示）
+        _log("生成场景一：单机单卡推理 (Qwen3.6-27B)", verbose)
+        all_perf.extend(estimate_performance(
+            gpu_spec, 27.0, "fp16", [8, 16, 32], 1,
+            scenario="single_card",
+            model_name="Qwen3.6-27B",
+            deploy_desc="单机单卡推理"
+        ))
+
+        # 场景二：单机多卡分布式推理（gpu_count >= 8 时展示）
+        if gpu_count >= 8:
+            _log(f"检测到 {gpu_count} 卡 → 生成场景二：单机多卡 (DeepSeek-V3.2)", verbose)
+            all_perf.extend(estimate_performance(
+                gpu_spec, 685.0, "int8", [32, 64, 128], gpu_count,
+                scenario="single_node_multi",
+                model_name="DeepSeek-V3.2 (685B)",
+                deploy_desc=f"单机 {gpu_count} 卡分布式推理"
+            ))
+
+        # 场景三：多机多卡分布式推理（gpu_count >= 8 且有 RDMA 时展示）
         if gpu_count >= 8 and has_rdma:
-            # 场景三：多机多卡 — 双机 16 卡 GLM-5.1
-            _log(f"检测到 {gpu_count} 卡 + RDMA → 多机场景 (GLM-5.1)", verbose)
-            perf_data = estimate_performance(
+            _log(f"检测到 {gpu_count} 卡 + RDMA → 生成场景三：多机多卡 (GLM-5.1)", verbose)
+            all_perf.extend(estimate_performance(
                 gpu_spec, 754.0, "int4", [64, 128, 256], gpu_count * 2,
                 memory_bw_factor=0.85, rdma_latency_us=5.0,
                 scenario="multi_node",
                 model_name="GLM-5.1 (754B)",
                 deploy_desc=f"双机 {gpu_count * 2} 卡 RDMA 分布式推理"
-            )
-        elif gpu_count >= 4:
-            # 场景二：单机多卡 — DeepSeek-V3.2
-            _log(f"检测到 {gpu_count} 卡 → 单机多卡场景 (DeepSeek-V3.2)", verbose)
-            perf_data = estimate_performance(
-                gpu_spec, 685.0, "int8", [32, 64, 128], gpu_count,
-                scenario="single_node_multi",
-                model_name="DeepSeek-V3.2 (685B)",
-                deploy_desc=f"单机 {gpu_count} 卡分布式推理"
-            )
-        else:
-            # 场景一：单机单卡 — Qwen3.6-27B
-            _log(f"检测到 {gpu_count} 卡 → 单机单卡场景 (Qwen3.6-27B)", verbose)
-            perf_data = estimate_performance(
-                gpu_spec, 27.0, "fp16", [8, 16, 32], max(gpu_count, 1),
-                scenario="single_card",
-                model_name="Qwen3.6-27B",
-                deploy_desc="单机单卡推理"
-            )
+            ))
 
-        performance = perf_data
+        performance = all_perf
         _log(f"性能预估完成 ({len(performance)} 条)", verbose)
     except Exception as exc:
         err_msg = f"性能预估失败: {exc}"

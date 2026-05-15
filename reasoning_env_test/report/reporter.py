@@ -549,14 +549,7 @@ def _section_performance(performance: List[Dict[str, Any]]) -> str:
     for sc_key in ("single_card", "single_node_multi", "multi_node", "default"):
         sc_data = scenarios.get(sc_key)
         if not sc_data:
-            if sc_key != "default" and sc_key == "multi_node":
-                lines.append("### 场景三：多机多卡分布式推理")
-                lines.append("")
-                lines.append("⚠️ 未检测到 RDMA 设备或不满足多机部署条件。")
-                lines.append("")
-            elif sc_key != "default" and sc_key == "single_node_multi":
-                pass  # 多机场景已覆盖时，不再提示
-            continue
+            continue  # 只展示有数据的场景
 
         lines.append(f"### {scenario_titles[sc_key]}")
         lines.append("")
