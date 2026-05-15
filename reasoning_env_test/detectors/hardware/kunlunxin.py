@@ -78,7 +78,14 @@ class KunlunxinDetector(BaseHardwareDetector):
         return self._parse_q_output(output)
 
     def _parse_q_output(self, output: str) -> Optional[List[Dict[str, Any]]]:
-        """解析 xpu-smi -q 的 key-value 输出。"""
+        """解析 xpu-smi -q 的 key-value 输出。
+
+        格式特点：
+          - 每个 XPU 块以 'XPU <pci_addr>' 开头（必须是行首的 'XPU ' 后跟十六进制地址）
+          - 各部分标题（如 Memory Usage、Firmware Version）独占一行，无冒号
+          - key-value 格式：'Key : Value'
+          - 缩进表示嵌套
+        """
         xpus: List[Dict[str, Any]] = []
         current: Optional[Dict[str, Any]] = None
         in_memory_section = False
@@ -86,8 +93,9 @@ class KunlunxinDetector(BaseHardwareDetector):
         for line in output.splitlines():
             stripped = line.strip()
 
-            # 检测 XPU 块开头: "XPU 00000000:29:00.0"
-            xpu_match = re.match(r"^XPU\s+(\S+)", stripped)
+            # ── 检测 XPU 块开头: 行首 "XPU " + PCI 地址格式 ──
+            # 精确匹配 'XPU 00000000:29:00.0'，排除 'XPU Link Info' 等
+            xpu_match = re.match(r"^XPU\s+[0-9a-fA-F]{8}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-9a-fA-F]", stripped)
             if xpu_match:
                 if current is not None:
                     xpus.append(current)
@@ -95,21 +103,20 @@ class KunlunxinDetector(BaseHardwareDetector):
                 in_memory_section = False
                 continue
 
+            # ── 没有活跃 XPU 块时，只跟踪 Memory Usage 切换 ──
             if current is None:
-                # 跟踪 Memory Usage 部分
                 if stripped.rstrip(":") == "Memory Usage":
                     in_memory_section = True
-                elif stripped and not stripped.startswith("=") and ":" not in stripped:
+                elif stripped and ":" not in stripped and not stripped.startswith("="):
                     in_memory_section = False
                 continue
 
-            # 跟踪 Memory Usage 部分
-            if stripped.rstrip(":") == "Memory Usage":
-                in_memory_section = True
+            # ── 活跃 XPU 块内 ──
+
+            # 没有冒号的行 -> 新部分标题，重置 in_memory_section
+            if ":" not in stripped and stripped and not stripped.startswith("="):
+                in_memory_section = stripped.rstrip(":") == "Memory Usage"
                 continue
-            if stripped and not stripped.startswith("=") and ":" not in stripped:
-                # 非空行且不含冒号 -> 新部分标题
-                in_memory_section = False
 
             # 解析 key: value
             kv_match = re.match(r"^\s*(.+?)\s*:\s*(.+)$", line)
