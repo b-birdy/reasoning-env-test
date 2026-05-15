@@ -395,7 +395,7 @@ class TestDetectMemory:
                     result = detect_memory()
 
         assert result["total_gb"] > 0
-        assert result["type"] == "Unknown"
+        assert "Unknown" in result["type"]
         assert result["speed_mhz"] == 0
         assert result["modules"] == 0
 
@@ -410,7 +410,7 @@ class TestDetectMemory:
                     result = detect_memory()
 
         assert result["total_gb"] == 0.0
-        assert result["type"] == "Unknown"
+        assert "Unknown" in result["type"]
 
     def test_detect_memory_non_linux(self):
         """非 Linux 系统返回默认值。"""
@@ -430,7 +430,7 @@ class TestDetectMemory:
                 ):
                     result = detect_memory()
 
-        assert result["type"] == "Unknown"
+        assert "Unknown" in result["type"]
         assert result["modules"] == 0
 
 

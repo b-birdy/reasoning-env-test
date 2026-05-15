@@ -563,14 +563,15 @@ def _section_performance(performance: List[Dict[str, Any]]) -> str:
         lines.append(f"**部署模型**: {sc_data[0].get('model_name', 'N/A')}")
         lines.append(f"**部署方式**: {sc_data[0].get('deploy_desc', 'N/A')}")
         lines.append("")
-        lines.append("| 并发批次 | 吞吐 (tok/s) | P50 延迟 (ms) | P99 延迟 (ms) |")
-        lines.append("|---|---|---|---|")
+        lines.append("| 并发批次 | 单进程吞吐 (tok/s) | 总吞吐 (tok/s) | P50 延迟 (ms) | P99 延迟 (ms) |")
+        lines.append("|---|---|---|---|---|")
         for row in sc_data:
             concurrency = row.get("concurrency", 0)
-            tok = row.get("tok_per_sec", 0)
+            tok_single = row.get("tok_per_sec_single", 0)
+            tok_total = row.get("tok_per_sec_total", 0)
             p50 = row.get("ttft_p50_ms", 0)
             p99 = row.get("ttft_p99_ms", 0)
-            lines.append(f"| {concurrency} | {tok:.1f} | {p50:.1f} | {p99:.1f} |")
+            lines.append(f"| {concurrency} | {tok_single:.1f} | {tok_total:.1f} | {p50:.1f} | {p99:.1f} |")
         lines.append("")
 
     lines.append("")
@@ -968,13 +969,25 @@ def _build_software_section(software: Dict[str, Any], hardware: List[Dict[str, A
     lines.append("### 5.6 硬件管理工具")
     lines.append("")
     cmd_result = software.get("commands", {})
-    hardware_tools = ["xpu-smi", "nvidia-smi", "rocm-smi", "npu-smi", "docker"]
-    lines.append("| 工具 | 状态 |")
-    lines.append("|---|---|")
-    for tool in hardware_tools:
+    hardware_tools = [
+        ("xpu-smi", "昆仑芯 XPU 管理工具"),
+        ("nvidia-smi", "NVIDIA GPU 管理工具"),
+        ("rocm-smi", "AMD GPU 管理工具"),
+        ("hy-smi", "海光 DCU 管理工具"),
+        ("npu-smi", "昇腾 NPU 管理工具"),
+        ("mthreads-smi", "摩尔线程 GPU 管理工具"),
+        ("cnmon", "寒武纪 MLU 监控工具"),
+        ("biren-smi", "壁仞 GPU 管理工具"),
+        ("msmi", "天数智芯 GPU 管理工具"),
+        ("smi", "燧原 GCU 管理工具"),
+        ("docker", "容器运行时"),
+    ]
+    lines.append("| 工具 | 状态 | 备注 |")
+    lines.append("|---|---|---|")
+    for tool, remark in hardware_tools:
         found = cmd_result.get(tool, False)
         status = "✅ 已安装" if found else "⚠️ 未安装"
-        lines.append(f"| {tool} | {status} |")
+        lines.append(f"| {tool} | {status} | {remark} |")
 
     return "\n".join(lines)
 

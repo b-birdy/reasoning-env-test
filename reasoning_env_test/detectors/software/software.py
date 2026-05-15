@@ -34,6 +34,12 @@ COMMANDS = [
     "rocm-smi",
     "npu-smi",
     "xpu-smi",
+    "hy-smi",
+    "mthreads-smi",
+    "cnmon",
+    "biren-smi",
+    "msmi",
+    "smi",
     "docker",
     "kubectl",
     "ollama",
@@ -52,10 +58,16 @@ COMMANDS = [
 
 # 待检测硬件管理工具（与 COMMANDS 独立，用于 hardware_tools 字段）
 HARDWARE_TOOLS = [
-    "xpu-smi",
-    "nvidia-smi",
-    "rocm-smi",
-    "npu-smi",
+    "xpu-smi",      # 昆仑芯
+    "nvidia-smi",   # NVIDIA
+    "rocm-smi",     # AMD
+    "hy-smi",       # 海光 DCU
+    "npu-smi",      # 昇腾
+    "mthreads-smi", # 摩尔线程
+    "cnmon",        # 寒武纪
+    "biren-smi",    # 壁仞
+    "msmi",         # 天数智芯
+    "smi",          # 燧原
     "dmidecode",
     "lspci",
     "lshw",

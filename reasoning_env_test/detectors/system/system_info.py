@@ -435,7 +435,44 @@ def detect_memory() -> Dict[str, Any]:
         result["modules"] = dmi_info["modules"]
         result["size_per_module_gb"] = dmi_info["size_per_module_gb"]
 
+    # 降级：尝试通过 CPU 型号推断 DDR 代数
+    if result["type"] in ("Unknown", ""):
+        result["type"] = _infer_ddr_from_cpu()
+
+    # 最终降级：给出明确提示
+    if result["type"] in ("Unknown", ""):
+        result["type"] = "Unknown (需 root 权限运行 dmidecode)"
+
     return result
+
+
+def _infer_ddr_from_cpu() -> str:
+    """通过 CPU 型号关键词推断内存 DDR 代数。"""
+    try:
+        with open("/proc/cpuinfo") as f:
+            for line in f:
+                if line.startswith("model name"):
+                    cpu = line.split(":", 1)[1].strip().lower()
+                    # DDR5: Intel 4th Gen+ Xeon (Sapphire Rapids, Emerald Rapids, Granite Rapids)
+                    if any(kw in cpu for kw in ["sapphire rapids", "emerald rapids", "granite rapids",
+                                                 "4th gen", "5th gen", "6th gen"]):
+                        return "DDR5 (CPU 推断)"
+                    if re.search(r'platinum\s+84', cpu) or re.search(r'gold\s+64', cpu):
+                        return "DDR5 (CPU 推断)"
+                    # DDR5: AMD EPYC 9004/8004 (Genoa, Bergamo, Siena, Turin)
+                    if any(kw in cpu for kw in ["genoa", "bergamo", "siena", "turin",
+                                                 "epyc 90", "epyc 80"]):
+                        return "DDR5 (CPU 推断)"
+                    # DDR4: Intel 1st-3rd Gen Xeon
+                    if any(kw in cpu for kw in ["skylake", "cascade lake", "ice lake", "cooper lake"]):
+                        return "DDR4 (CPU 推断)"
+                    # DDR4: AMD EPYC 7001/7002/7003
+                    if any(kw in cpu for kw in ["naples", "rome", "milan", "epyc 7"]):
+                        return "DDR4 (CPU 推断)"
+                    break
+    except (FileNotFoundError, IOError):
+        pass
+    return "Unknown"
 
 
 def _run_dmidecode() -> Optional[str]:
