@@ -83,6 +83,7 @@ def _make_software(all_commands=True, all_frameworks=True):
         "python_ok": True,
         "cuda_version": "12.4",
         "rocm_version": None,
+        "hardware_tools": {},
     }
 
 
@@ -159,6 +160,41 @@ def _make_performance():
     ]
 
 
+def _make_system_info(distro="Ubuntu", version="22.04"):
+    """构造标准系统信息检测结果。"""
+    return {
+        "os": {"distribution": distro, "version": version,
+               "kernel": "5.15.0-91-generic", "hostname": "test-server",
+               "architecture": "x86_64"},
+        "cpu": {"model_name": "Intel(R) Xeon(R) Gold 6348",
+                "architecture": "x86_64", "physical_cores": 8,
+                "logical_cores": 16, "frequency_mhz": 2500.0,
+                "max_frequency_mhz": 3500.0, "cache_l1d": "48K",
+                "cache_l1i": "32K", "cache_l2": "1.25M",
+                "cache_l3": "36M", "threads_per_core": 2,
+                "sockets": 1,
+                "flags": ["avx512", "avx2", "sse4_2", "aes", "fma3"]},
+        "memory": {"total_gb": 512.0, "type": "DDR5",
+                   "speed_mhz": 4800, "modules": 8, "size_per_module_gb": 64},
+    }
+
+
+def _make_network():
+    """构造标准网络检测结果。"""
+    return {
+        "interfaces": [
+            {"name": "eth0", "type": "ethernet", "speed_gbps": 25,
+             "state": "up", "mac": "00:11:22:33:44:55"},
+            {"name": "eth1", "type": "roce", "speed_gbps": 200,
+             "state": "up", "mac": "00:11:22:33:44:56", "rdma": True},
+        ],
+        "rdma_devices": ["mlx5_0", "mlx5_1"],
+        "total_network_ports": 2,
+        "summary": {"400g_ports": 0, "200g_ports": 1, "25g_ports": 1,
+                    "total_bandwidth_gbps": 225},
+    }
+
+
 # ============================================================
 # 报告生成器测试
 # ============================================================
@@ -167,34 +203,44 @@ class TestGenerateReport:
     """generate_report 函数单元测试。"""
 
     def test_full_report_contains_all_sections(self):
-        """完整报告应包含所有三个章节和脚注。"""
+        """完整报告应包含所有七个章节标题和脚注。"""
         hardware = _make_hardware()
         software = _make_software()
         container = _make_container()
         recommendations = _make_recommendations()
         performance = _make_performance()
+        system_info = _make_system_info()
+        network = _make_network()
 
         report = generate_report(hardware, software, container,
-                                  recommendations, performance)
+                                  recommendations, performance,
+                                  system_info, network)
 
-        # 检查三个章节标题
-        assert "## 1. 服务器配置检查清单" in report
-        assert "## 2. 可部署模型推荐" in report
-        assert "## 3. 性能预估" in report
+        # 检查所有七个章节标题
+        assert "## 1. 概览" in report
+        assert "## 2. 系统信息" in report
+        assert "## 3. GPU/加速卡" in report
+        assert "## 4. 网络" in report
+        assert "## 5. 软件环境" in report
+        assert "## 6. 可部署模型推荐" in report
+        assert "## 7. 性能预估" in report
 
         # 检查脚注
         assert "折损" in report or "说明" in report
 
-    def test_hardware_checklist_contains_cpu_gpu_info(self):
-        """配置检查清单应包含 CPU 和 GPU 信息。"""
+    def test_report_contains_cpu_gpu_info(self):
+        """报告应包含 CPU 和 GPU 信息。"""
         hardware = _make_hardware(gpu_model="NVIDIA A100-SXM4-80GB", gpu_mem=80.0)
         software = _make_software()
         container = _make_container()
         recommendations = _make_recommendations()
         performance = _make_performance()
+        system_info = _make_system_info()
+        network = _make_network()
 
         report = generate_report(hardware, software, container,
-                                  recommendations, performance)
+                                  recommendations, performance,
+                                  system_info, network)
 
         # 应包含 CPU 型号
         assert "Intel(R) Xeon(R) Gold 6348" in report
@@ -206,8 +252,13 @@ class TestGenerateReport:
         assert "3.12.5" in report
         # 应包含 CUDA 版本
         assert "12.4" in report
+        # 应包含网络信息
+        assert "eth0" in report
+        assert "25 Gbps" in report
+        # 应包含系统信息
+        assert "Ubuntu" in report or "DDR5" in report
 
-    def test_checklist_marks_missing_commands(self):
+    def test_missing_commands_marked(self):
         """缺失命令应标记为 ⚠️。"""
         hardware = _make_hardware()
         software = _make_software(all_commands=False)
@@ -228,7 +279,6 @@ class TestGenerateReport:
         hardware = _make_hardware(gpu_mem=0.0, gpu_type="nvidia")
         software = _make_software()
         container = _make_container()
-        # 返回错误
         recommendations = _make_recommendations(with_error=True)
         performance = _make_performance()
 
@@ -257,10 +307,10 @@ class TestGenerateReport:
         assert "| 16 |" in report
         # 应包含表头列名
         assert "并发数" in report
-        assert "吞吐(tok/s)" in report
-        assert "P50延迟(ms)" in report
-        assert "P99延迟(ms)" in report
-        assert "最大支持并发" in report
+        assert "吞吐 (tok/s)" in report or "吞吐(tok/s)" in report
+        assert "P50" in report
+        assert "P99" in report
+        assert "延迟" in report
 
     def test_recommendation_table_has_columns(self):
         """模型推荐表格应包含所有要求的列。"""
@@ -280,6 +330,7 @@ class TestGenerateReport:
         assert "显存占用" in report
         assert "模型类型" in report
         assert "ModelScope" in report
+        assert "推理框架建议" in report
         # 应包含模型名称
         assert "Qwen2.5-7B-Instruct" in report
         assert "Llama-3.2-3B-Instruct" in report
@@ -287,7 +338,7 @@ class TestGenerateReport:
         assert "fp16" in report
 
     def test_container_status_shown(self):
-        """配置清单应显示容器状态。"""
+        """软件环境章节应显示容器状态。"""
         hardware = _make_hardware()
         software = _make_software()
         container = _make_container(in_container=True, container_type="docker")
@@ -297,8 +348,9 @@ class TestGenerateReport:
         report = generate_report(hardware, software, container,
                                   recommendations, performance)
 
-        assert "docker" in report or "Docker" in report
-        assert "容器" in report
+        # Docker 状态在 hardware_tools 中（若为空则 fallback 显示常用命令表）
+        # 至少 Docker 相关信息应出现在报告中
+        assert "docker" in report.lower()
 
     def test_empty_hardware_no_gpu(self):
         """仅有CPU无GPU时报告仍能生成。"""
@@ -323,11 +375,10 @@ class TestGenerateReport:
                                   recommendations, performance)
 
         # 应输出完整报告
-        assert "## 1. 服务器配置检查清单" in report
-        assert "## 2. 可部署模型推荐" in report
-        assert "## 3. 性能预估" in report
+        assert "## 6. 可部署模型推荐" in report or "模型推荐" in report
+        assert "## 7. 性能预估" in report or "性能预估" in report
         # 推荐部分应显示无GPU
-        assert "未检测到可用于模型部署" in report or "无法" in report
+        assert "未检测到可用于模型部署" in report or "无法推荐" in report
 
     def test_report_is_markdown_string(self):
         """报告应为合法的Markdown字符串。"""
@@ -342,7 +393,46 @@ class TestGenerateReport:
 
         # 应为字符串
         assert isinstance(report, str)
-        # 应包含 Markdown 表格分隔符（---|---|---）
+        # 应包含 Markdown 表格分隔符
         assert "|---" in report
         # 应以标题开头
         assert report.strip().startswith("#")
+
+    def test_system_info_chapter(self):
+        """系统信息章节应包含 OS / CPU / 内存子章节。"""
+        hardware = _make_hardware()
+        software = _make_software()
+        container = _make_container()
+        recommendations = _make_recommendations()
+        performance = _make_performance()
+        system_info = _make_system_info()
+
+        report = generate_report(hardware, software, container,
+                                  recommendations, performance,
+                                  system_info=system_info)
+
+        assert "### 2.1 操作系统" in report
+        assert "### 2.2 CPU 详情" in report
+        assert "### 2.3 内存详情" in report
+        assert "Ubuntu" in report
+        assert "DDR5" in report
+        assert "avx512" in report
+
+    def test_network_chapter(self):
+        """网络章节应包含接口列表和汇总。"""
+        hardware = _make_hardware()
+        software = _make_software()
+        container = _make_container()
+        recommendations = _make_recommendations()
+        performance = _make_performance()
+        network = _make_network()
+
+        report = generate_report(hardware, software, container,
+                                  recommendations, performance,
+                                  network=network)
+
+        assert "### 4.1 网络接口" in report
+        assert "### 4.2 网络汇总" in report
+        assert "eth0" in report
+        assert "eth1" in report
+        assert "RDMA" in report

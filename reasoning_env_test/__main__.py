@@ -87,21 +87,35 @@ def main(argv: List[str] | None = None) -> int:
         errors.append(err)
         hardware = []
 
-    # ── 2. 软件检测 ────────────────────────────────────────────────
+    # ── 2. 系统信息检测 ─────────────────────────────────────────────
+    from reasoning_env_test.detectors.system.system_info import detect_all as detect_system_info
+    system_info, err = _safe_call(detect_system_info, "系统信息检测", verbose)
+    if err:
+        errors.append(err)
+        system_info = {}
+
+    # ── 3. 网络检测 ─────────────────────────────────────────────────
+    from reasoning_env_test.detectors.network.network import detect_all as detect_network
+    network, err = _safe_call(detect_network, "网络检测", verbose)
+    if err:
+        errors.append(err)
+        network = {}
+
+    # ── 4. 软件检测 ────────────────────────────────────────────────
     from reasoning_env_test.detectors.software.software import detect_all as detect_software
     software, err = _safe_call(detect_software, "软件检测", verbose)
     if err:
         errors.append(err)
         software = {}
 
-    # ── 3. 容器检测 ────────────────────────────────────────────────
+    # ── 5. 容器检测 ────────────────────────────────────────────────
     from reasoning_env_test.detectors.container.container import detect_all as detect_container
     container, err = _safe_call(detect_container, "容器检测", verbose)
     if err:
         errors.append(err)
         container = {}
 
-    # ── 4. 模型推荐 ────────────────────────────────────────────────
+    # ── 6. 模型推荐 ────────────────────────────────────────────────
     recommendations: Union[List[Dict[str, Any]], Dict[str, Any]] = {}
     if hardware:
         _log("正在模型推荐…", verbose)
@@ -124,7 +138,7 @@ def main(argv: List[str] | None = None) -> int:
         }
         _log("硬件检测无结果，跳过模型推荐", verbose)
 
-    # ── 5. 性能预估 ────────────────────────────────────────────────
+    # ── 7. 性能预估 ────────────────────────────────────────────────
     performance: List[Dict[str, Any]] = []
     if isinstance(recommendations, list) and recommendations:
         _log("正在性能预估…", verbose)
@@ -148,7 +162,7 @@ def main(argv: List[str] | None = None) -> int:
     else:
         _log("无推荐模型，跳过性能预估", verbose)
 
-    # ── 6. 生成报告 ────────────────────────────────────────────────
+    # ── 8. 生成报告 ────────────────────────────────────────────────
     report_content: str = ""
     _log("正在生成报告…", verbose)
     try:
@@ -159,6 +173,8 @@ def main(argv: List[str] | None = None) -> int:
             container=container or {},
             recommendations=recommendations or {},
             performance=performance or [],
+            system_info=system_info or {},
+            network=network or {},
         )
         _log("报告生成完成", verbose)
     except Exception as exc:
@@ -168,7 +184,7 @@ def main(argv: List[str] | None = None) -> int:
         if verbose:
             traceback.print_exc(file=sys.stderr)
 
-    # ── 7. 输出 ────────────────────────────────────────────────────
+    # ── 9. 输出 ────────────────────────────────────────────────────
     if args.output:
         try:
             with open(args.output, "w", encoding="utf-8") as f:
@@ -183,7 +199,7 @@ def main(argv: List[str] | None = None) -> int:
     else:
         _write_utf8(sys.stdout, report_content)
 
-    # ── 8. 总结 ────────────────────────────────────────────────────
+    # ── 10. 总结 ───────────────────────────────────────────────────
     if errors:
         print(
             "\n---\n⚠️ 检测过程中出现以下错误:\n" + "\n".join(f"  - {e}" for e in errors),
