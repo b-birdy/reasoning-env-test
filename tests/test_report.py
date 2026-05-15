@@ -328,10 +328,8 @@ class TestGenerateReport:
         assert "参数量" in report
         assert "推荐精度" in report
         assert "显存总需求" in report
-        assert "模型类型" in report
-        assert "部署建议" in report
+        assert "部署方案" in report
         assert "推理框架" in report
-        assert "ModelScope" in report
         # 应包含模型名称
         assert "Qwen2.5-7B-Instruct" in report
         assert "Llama-3.2-3B-Instruct" in report

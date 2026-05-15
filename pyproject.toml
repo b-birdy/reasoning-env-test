@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "Reasoning Environment Test Toolkit"
 requires-python = ">=3.8"
 dependencies = [
+    "rich>=13.0",
 ]
 
 [project.optional-dependencies]

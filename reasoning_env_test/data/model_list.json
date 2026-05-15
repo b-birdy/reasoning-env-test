@@ -98,20 +98,6 @@
     "framework": "vLLM/SGLang"
   },
   {
-    "name": "Qwen3.6-27B",
-    "params_b": 27.0,
-    "type": "llm",
-    "source": "ModelScope",
-    "model_scope_url": "https://modelscope.cn/models/Qwen/Qwen3.6-27B",
-    "min_vram_fp16_gb": 59.4,
-    "min_vram_int8_gb": 29.7,
-    "min_vram_int4_gb": 14.85,
-    "family": "Qwen",
-    "notes": "通义千问3.6稠密模型，27B参数，编码能力强",
-    "deploy_mode": "单机单卡",
-    "framework": "vLLM/SGLang"
-  },
-  {
     "name": "GLM-4.7-Flash",
     "params_b": 31.2,
     "type": "llm",
@@ -122,6 +108,20 @@
     "min_vram_int4_gb": 17.16,
     "family": "GLM",
     "notes": "智谱AI轻量级MoE模型，31.2B总参数，3B激活",
+    "deploy_mode": "单机单卡",
+    "framework": "vLLM/SGLang"
+  },
+  {
+    "name": "Qwen3.6-27B",
+    "params_b": 27.0,
+    "type": "llm",
+    "source": "ModelScope",
+    "model_scope_url": "https://modelscope.cn/models/Qwen/Qwen3.6-27B",
+    "min_vram_fp16_gb": 59.4,
+    "min_vram_int8_gb": 29.7,
+    "min_vram_int4_gb": 14.85,
+    "family": "Qwen",
+    "notes": "通义千问3.6稠密模型，27B参数，编码能力强",
     "deploy_mode": "单机单卡",
     "framework": "vLLM/SGLang"
   }

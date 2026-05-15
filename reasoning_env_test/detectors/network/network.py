@@ -146,12 +146,17 @@ def _get_rdma_info() -> Tuple[List[str], Set[str]]:
     output = _run_cmd(["rdma", "link", "show"])
     if output:
         for line in output.splitlines():
-            # 匹配设备名: "1: rxe_0: state ACTIVE ..."
-            m = re.match(r"\s*\d+:\s+(\S+?)(?:\s*$|[\s/:])", line)
+            # 格式1: "link mlx5_20/1 state ACTIVE physical_state LINK_UP netdev eth2"
+            # 格式2: "1: rxe_0: state ACTIVE ..."
+            # 格式3: "1: mlx5_0: state ACTIVE ..."
+            # 统一提取设备名
+            m = re.search(r"(?:^|\s)(?:\d+:\s+)?(?:link\s+)?([a-zA-Z0-9_]+?)(?:/\d+)?(?:\s|:)", line)
             if m:
                 dev_name = m.group(1).strip()
-                if dev_name not in rdma_devices:
-                    rdma_devices.append(dev_name)
+                if dev_name and dev_name not in rdma_devices:
+                    # 过滤掉非设备名行（如 "state", "ACTIVE" 等）
+                    if dev_name not in ("state", "ACTIVE", "LINK_UP", "link", "netdev", "physical_state"):
+                        rdma_devices.append(dev_name)
 
             # 匹配关联的 netdev: "... netdev eth0"
             netdev_m = re.search(r"netdev\s+(\S+)", line)

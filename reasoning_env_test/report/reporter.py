@@ -465,10 +465,8 @@ def _section_software(software: Dict[str, Any]) -> str:
 def _section_recommendation(
     recommendations: Union[List[Dict[str, Any]], Dict[str, Any]],
 ) -> str:
-    """生成模型推荐章节（改进现有逻辑）。"""
+    """生成模型推荐章节。"""
     lines: List[str] = []
-    lines.append("## 6. 可部署模型推荐")
-    lines.append("")
 
     if isinstance(recommendations, dict) and recommendations.get("error"):
         err_msg = recommendations.get("message", "无法推荐模型")
@@ -493,20 +491,18 @@ def _section_recommendation(
         lines.append("")
         return "\n".join(lines)
 
-    # 有推荐模型
-    lines.append("根据服务器显存和卡间互联配置，以下模型可在当前环境中部署运行。")
+    lines.append("根据服务器显存和卡间互联配置，推荐以下部署方案（按参数量降序）。")
     lines.append("")
 
-    lines.append("| 推荐模型 | 参数量 | 推荐精度 | 显存总需求 | 模型类型 | 部署建议 | 推理框架 | ModelScope |")
-    lines.append("|---|---|---|---|---|---|---|---|")
+    lines.append("| 推荐模型 | 参数量 | 推荐精度 | 显存总需求 | 部署方案 | 推理框架 |")
+    lines.append("|---|---|---|---|---|---|")
 
-    for rec in recommendations:
+    # 只显示前5个
+    for rec in recommendations[:5]:
         model = rec.get("model", {})
         name = model.get("name", "未知")
         params = model.get("params_b", 0)
         precision = rec.get("precision", "fp16")
-        model_type = model.get("type", "llm")
-        model_scope_url = model.get("model_scope_url", "")
         deploy_mode = model.get("deploy_mode", "单机单卡")
         framework = model.get("framework", "vLLM")
 
@@ -514,14 +510,9 @@ def _section_recommendation(
         vram = model.get(vram_key, 0)
         vram_display = f"{vram:.0f} GB" if vram else "-"
 
-        type_map = {"llm": "LLM", "multimodal": "多模态"}
-        type_cn = type_map.get(model_type, model_type)
-
-        url_display = f"[链接]({model_scope_url})" if model_scope_url else "-"
-
         lines.append(
             f"| {name} | {params}B | {precision} | {vram_display} "
-            f"| {type_cn} | {deploy_mode} | {framework} | {url_display} |"
+            f"| {deploy_mode} | {framework} |"
         )
 
     lines.append("")
@@ -533,71 +524,56 @@ def _section_recommendation(
 # ================================================================
 
 def _section_performance(performance: List[Dict[str, Any]]) -> str:
-    """生成性能预估章节（保留现有逻辑 + 格式改进）。"""
+    """生成性能预估章节。按场景分开展示。"""
     lines: List[str] = []
-    lines.append("## 7. 性能预估")
-    lines.append("")
 
     if not performance:
         lines.append("⚠️ 无法进行性能预估（缺少硬件或模型信息）。")
         lines.append("")
         return "\n".join(lines)
 
-    # 性能预估可能包含多个场景（单卡/多卡/多机）
-    # 将 performance 按 scenario 分组
+    # 性能预估按 scenario 分组展示
     from collections import defaultdict
     scenarios = defaultdict(list)
     for row in performance:
         scenario = row.get("scenario", "default")
         scenarios[scenario].append(row)
 
-    scenario_names = {
+    scenario_titles = {
         "single_card": "场景一：单机单卡推理",
-        "single_node_8": "场景二：单机 8 卡分布式推理",
-        "dual_node_16": "场景三：双机 16 卡分布式推理",
+        "single_node_multi": "场景二：单机多卡分布式推理",
+        "multi_node": "场景三：多机多卡分布式推理",
         "default": "性能预估",
     }
-    scenario_descriptions = {
-        "single_card": "基于单张加速卡，使用轻量模型（如 Qwen3.6-27B）进行推理。",
-        "single_node_8": "基于单机 8 卡互联，使用中大规模模型（如 DeepSeek-V3.2）进行推理。",
-        "dual_node_16": "基于双机 16 卡 RDMA 互联，使用超大规模模型（如 GLM-5.1）进行推理。",
-        "default": "",
-    }
 
-    for scenario_key in ["single_card", "single_node_8", "dual_node_16", "default"]:
-        scenario_data = scenarios.get(scenario_key)
-        if not scenario_data:
-            if scenario_key != "default":
-                # 对于不支持的多卡/多机场景，显示提示
-                lines.append(f"### {scenario_names[scenario_key]}")
+    for sc_key in ("single_card", "single_node_multi", "multi_node", "default"):
+        sc_data = scenarios.get(sc_key)
+        if not sc_data:
+            if sc_key != "default" and sc_key == "multi_node":
+                lines.append("### 场景三：多机多卡分布式推理")
                 lines.append("")
-                if not any(r.get("rdma_available", False) for r in performance):
-                    if "dual" in scenario_key:
-                        lines.append("⚠️ 未检测到 RDMA 设备，不支持多机分布式推理。")
-                elif "8" in scenario_key or "16" in scenario_key:
-                    lines.append("⚠️ 当前 GPU 卡数不足，不支持该场景。")
+                lines.append("⚠️ 未检测到 RDMA 设备或不满足多机部署条件。")
+                lines.append("")
+            elif sc_key != "default" and sc_key == "single_node_multi":
+                lines.append("### 场景二：单机多卡分布式推理")
+                lines.append("")
+                lines.append("⚠️ 当前 GPU 卡数不足，不支持单机多卡分布式推理。")
                 lines.append("")
             continue
 
-        lines.append(f"### {scenario_names[scenario_key]}")
+        lines.append(f"### {scenario_titles[sc_key]}")
         lines.append("")
-        desc = scenario_descriptions.get(scenario_key, "")
-        if desc:
-            lines.append(desc)
-            lines.append("")
-        lines.append(f"**测试模型**: {scenario_data[0].get('model_name', 'N/A')}")
+        lines.append(f"**部署模型**: {sc_data[0].get('model_name', 'N/A')}")
+        lines.append(f"**部署方式**: {sc_data[0].get('deploy_desc', 'N/A')}")
         lines.append("")
-        lines.append("| 并发批次 | 吞吐 (tok/s) | P50 延迟 (ms) | P99 延迟 (ms) | 最大支持并发 |")
-        lines.append("|---|---|---|---|---|")
-        for row in scenario_data:
+        lines.append("| 并发批次 | 吞吐 (tok/s) | P50 延迟 (ms) | P99 延迟 (ms) |")
+        lines.append("|---|---|---|---|")
+        for row in sc_data:
             concurrency = row.get("concurrency", 0)
             tok = row.get("tok_per_sec", 0)
             p50 = row.get("ttft_p50_ms", 0)
             p99 = row.get("ttft_p99_ms", 0)
-            max_sup = row.get("max_supported", 0)
-            lines.append(
-                f"| {concurrency} | {tok:.1f} | {p50:.1f} | {p99:.1f} | {max_sup} |"
-            )
+            lines.append(f"| {concurrency} | {tok:.1f} | {p50:.1f} | {p99:.1f} |")
         lines.append("")
 
     lines.append("")
@@ -795,8 +771,6 @@ def _build_gpu_section(hardware: List[Dict[str, Any]]) -> str:
             gpu_groups[gpu["type"]].append(gpu)
 
         # 每种类型单独小节
-        total_gpus = 0
-        total_vram_gb = 0.0
         for gpu_type, gpus in gpu_groups.items():
             gpu_name = _GPU_TYPE_NAMES.get(gpu_type, gpu_type)
             lines.append(f"### {gpu_name}")
@@ -814,33 +788,28 @@ def _build_gpu_section(hardware: List[Dict[str, Any]]) -> str:
                 lines.append(f"> {' | '.join(ver_parts)}")
                 lines.append("")
 
-            # 显示所有卡（优先使用 xpus 详情列表）
+            # 检测总卡数和总显存
             xpus = details.get("xpus", [])
             if xpus:
-                lines.append("| 索引 | 型号 | 显存 |")
+                total_cards = len(xpus)
+                total_vram = sum(x.get("memory_total_gb", 0) for x in xpus)
+                per_card_vram = xpus[0].get("memory_total_gb", 0)
+                lines.append(f"- **配置**: 1 个模组，{total_cards} 张卡，每张卡 {per_card_vram:.0f} GB")
+                lines.append(f"- **总显存**: {total_vram:.0f} GB")
+                lines.append("")
+                lines.append("| 卡索引 | 型号 | 显存 |")
                 lines.append("|---|---|---|")
                 for xpu in xpus:
                     idx = xpu.get("index", 0)
                     model = xpu.get("name", gpus[0].get("model", "未知"))
                     vram = xpu.get("memory_total_gb", 0)
-                    lines.append(f"| {idx} | {model} | {vram:.1f} GB |")
-                    total_gpus += 1
-                    total_vram_gb += vram
+                    lines.append(f"| {idx} | {model} | {vram:.0f} GB |")
             else:
                 count_in_group = details.get("gpu_count", 0) or details.get("xpu_count", 0) or 1
-                lines.append("| 索引 | 型号 | 显存 |")
-                lines.append("|---|---|---|")
-                for idx, gpu in enumerate(gpus):
-                    model = gpu.get("model", "未知")
-                    vram = gpu["memory_total_gb"]
-                    for i in range(count_in_group):
-                        lines.append(f"| {total_gpus} | {model} | {vram:.1f} GB |")
-                        total_gpus += 1
-                        total_vram_gb += vram
+                vram = gpus[0]["memory_total_gb"]
+                lines.append(f"- **配置**: 1 个模组，{count_in_group} 张卡，每张卡 {vram:.0f} GB")
+                lines.append(f"- **总显存**: {vram * count_in_group:.0f} GB")
             lines.append("")
-
-        # 汇总信息
-        lines.append(f"**总计**：共 {total_gpus} 张加速卡，总显存 {total_vram_gb:.1f} GB")
     else:
         lines.append("⚠️ 未检测到 GPU/加速卡。")
         lines.append("")
@@ -900,7 +869,7 @@ def _build_network_section(network: Dict[str, Any] = None) -> str:
     return "\n".join(lines)
 
 
-def _build_software_section(software: Dict[str, Any]) -> str:
+def _build_software_section(software: Dict[str, Any], hardware: List[Dict[str, Any]] = None) -> str:
     """构建第五章：软件环境。"""
     lines: List[str] = []
 
@@ -930,8 +899,8 @@ def _build_software_section(software: Dict[str, Any]) -> str:
         lines.append("ℹ️ 框架信息暂不可用。")
     lines.append("")
 
-    # 5.3 CUDA / ROCm
-    lines.append("### 5.3 CUDA / ROCm")
+    # 5.3 CUDA / ROCm / Kunlunxin Runtime
+    lines.append("### 5.3 GPU Runtime")
     lines.append("")
     lines.append("| 组件 | 版本 | 状态 |")
     lines.append("|---|---|---|")
@@ -939,13 +908,33 @@ def _build_software_section(software: Dict[str, Any]) -> str:
     if cuda_ver:
         lines.append(f"| CUDA | {cuda_ver} | ✅ 可用 |")
     else:
-        lines.append("| CUDA | - | ⚠️ 未检测到 |")
+        lines.append("| CUDA | - | ⚠️ 未检测到（仅 NVIDIA GPU 需要） |")
 
     rocm_ver = software.get("rocm_version")
     if rocm_ver:
         lines.append(f"| ROCm | {rocm_ver} | ✅ 可用 |")
     else:
-        lines.append("| ROCm | - | ℹ️ 不适用 |")
+        lines.append("| ROCm | - | ℹ️ 不适用（仅 AMD GPU 需要） |")
+
+    # 从硬件检测结果中提取昆仑芯 Runtime
+    kunlun_rt = ""
+    for hw in hardware:
+        if hw["type"] == "kunlunxin" and hw.get("memory_total_gb", 0) > 0:
+            details = hw.get("details", {})
+            driver_ver = details.get("driver_version", "")
+            xpu_rt = details.get("xpu_rt_version", "")
+            if driver_ver:
+                kunlun_rt += f"驱动 {driver_ver}"
+            if xpu_rt:
+                if kunlun_rt:
+                    kunlun_rt += " / "
+                kunlun_rt += f"Runtime {xpu_rt}"
+            break
+    if kunlun_rt:
+        lines.append(f"| Kunlunxin XPU | {kunlun_rt} | ✅ 可用 |")
+    else:
+        lines.append("| Kunlunxin XPU | - | ℹ️ 不适用（仅昆仑芯 GPU 需要） |")
+
     lines.append("")
 
     # 5.4 Docker 环境
@@ -982,7 +971,7 @@ def _build_software_section(software: Dict[str, Any]) -> str:
     lines.append("### 5.6 硬件管理工具")
     lines.append("")
     cmd_result = software.get("commands", {})
-    hardware_tools = ["nvidia-smi", "rocm-smi", "npu-smi", "docker"]
+    hardware_tools = ["xpu-smi", "nvidia-smi", "rocm-smi", "npu-smi", "docker"]
     lines.append("| 工具 | 状态 |")
     lines.append("|---|---|")
     for tool in hardware_tools:
@@ -1322,7 +1311,7 @@ def generate_report(
     lines.append("")
     lines.append("Python 版本、推理框架、CUDA/ROCm 及硬件管理工具。")
     lines.append("")
-    lines.append(_build_software_section(software))
+    lines.append(_build_software_section(software, hardware))
     lines.append("")
     lines.append("---")
     lines.append("")
@@ -1355,6 +1344,20 @@ def generate_report(
     lines.append("")
 
     # ── 报告结尾 ─────────────────────────────────────────────────
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+    lines.append("### 📖 查看报告")
+    lines.append("")
+    lines.append("推荐使用 **Rich**（Python 终端 Markdown 渲染器）查看本报告：")
+    lines.append("")
+    lines.append("```bash")
+    lines.append("# 安装 rich（已添加到 requirements.txt）")
+    lines.append("pip install rich")
+    lines.append("")
+    lines.append("# 使用 rich 查看报告")
+    lines.append("python -m rich.markdown server_report.md")
+    lines.append("```")
     lines.append("")
     lines.append("*报告由推理环境检测工具自动生成*")
 

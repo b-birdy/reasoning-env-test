@@ -140,27 +140,58 @@ def main(argv: List[str] | None = None) -> int:
 
     # ── 7. 性能预估 ────────────────────────────────────────────────
     performance: List[Dict[str, Any]] = []
-    if isinstance(recommendations, list) and recommendations:
-        _log("正在性能预估…", verbose)
-        try:
-            from reasoning_env_test.performance.estimator import estimate_performance
-            best = recommendations[0]
-            model_params_b: float = best["model"]["params_b"]
-            precision: str = best["precision"]
-            concurrency_levels = [4, 8, 16, 32, 64, 128]
-            performance = estimate_performance(
-                hardware, model_params_b, precision, concurrency_levels,
-            )
-            _log("性能预估完成", verbose)
-        except Exception as exc:
-            err_msg = f"性能预估失败: {exc}"
-            errors.append(err_msg)
-            _log(err_msg, verbose)
-            if verbose:
-                traceback.print_exc(file=sys.stderr)
-            performance = []
-    else:
-        _log("无推荐模型，跳过性能预估", verbose)
+    _log("正在性能预估…", verbose)
+    try:
+        from reasoning_env_test.performance.estimator import estimate_performance
+
+        # 统计 GPU 卡数和 RDMA 可用性
+        gpu_count = 0
+        has_rdma = False
+        has_xpus = bool([h for h in (hardware or []) if h.get("type") == "kunlunxin" and h.get("memory_total_gb", 0) > 0])
+
+        for hw in (hardware or []):
+            if hw.get("type") in ("nvidia", "amd", "ascend", "kunlunxin", "hygon") and hw.get("memory_total_gb", 0) > 0:
+                details = hw.get("details", {})
+                gpu_count += details.get("gpu_count", 0) or details.get("xpu_count", 0) or 1
+
+        if network and network.get("rdma_devices"):
+            has_rdma = len(network["rdma_devices"]) > 0
+
+        # 根据硬件情况选择场景
+        if gpu_count >= 8 and has_rdma:
+            # 场景三：多机多卡 — 双机 16 卡 GLM-5.1
+            _log(f"检测到 {gpu_count} 卡 + RDMA → 多机场景", verbose)
+            perf_data = estimate_performance(hardware, 754.0, "int4", [64, 128, 256])
+            for row in perf_data:
+                row["scenario"] = "multi_node"
+                row["model_name"] = "GLM-5.1 (754B)"
+                row["deploy_desc"] = "双机 16 卡 RDMA 分布式推理"
+        elif gpu_count >= 4:
+            # 场景二：单机多卡 — DeepSeek-V3.2
+            _log(f"检测到 {gpu_count} 卡 → 单机多卡场景", verbose)
+            perf_data = estimate_performance(hardware, 685.0, "int8", [32, 64, 128])
+            for row in perf_data:
+                row["scenario"] = "single_node_multi"
+                row["model_name"] = "DeepSeek-V3.2 (685B)"
+                row["deploy_desc"] = f"单机 {gpu_count} 卡分布式推理"
+        else:
+            # 场景一：单机单卡 — Qwen3.6-27B
+            _log(f"检测到 {gpu_count} 卡 → 单机单卡场景", verbose)
+            perf_data = estimate_performance(hardware, 27.0, "fp16", [8, 16, 32])
+            for row in perf_data:
+                row["scenario"] = "single_card"
+                row["model_name"] = "Qwen3.6-27B"
+                row["deploy_desc"] = "单机单卡推理"
+
+        performance = perf_data
+        _log(f"性能预估完成 ({len(performance)} 条)", verbose)
+    except Exception as exc:
+        err_msg = f"性能预估失败: {exc}"
+        errors.append(err_msg)
+        _log(err_msg, verbose)
+        if verbose:
+            traceback.print_exc(file=sys.stderr)
+        performance = []
 
     # ── 8. 生成报告 ────────────────────────────────────────────────
     report_content: str = ""
