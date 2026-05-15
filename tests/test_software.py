@@ -10,8 +10,10 @@ from reasoning_env_test.detectors.software.software import (
     BIN_DIRS,
     COMMANDS,
     FRAMEWORKS,
+    HARDWARE_TOOLS,
     scan_bin_dirs,
     detect_commands,
+    detect_hardware_tools,
     detect_frameworks,
     detect_python,
     detect_cuda,
@@ -37,58 +39,72 @@ def reset_mocks():
 
 
 class TestScanBinDirs:
-    def test_linux_scan_existing_dirs(self):
-        """Linux 下扫描存在的 bin 目录，应返回可执行文件列表。"""
+    def test_scan_bin_dirs_and_path(self):
+        """应同时扫描 BIN_DIRS 和 PATH 中的目录。"""
         with (
-            patch("reasoning_env_test.detectors.software.software.sys.platform", "linux"),
+            patch.dict(os.environ, {"PATH": "C:\\tools"}, clear=True),
             patch("os.path.isdir", return_value=True),
-            patch("os.listdir", return_value=["python3", "ls", "nvidia-smi"]),
+            patch("os.listdir", side_effect=[
+                ["python3", "ls"],           # /bin
+                ["gcc"],                     # /usr/bin
+                ["node"],                    # /usr/local/bin
+                ["kubectl.exe"],             # C:\tools
+            ]),
             patch("os.access", return_value=True),
         ):
             result = scan_bin_dirs()
-            # 3 个目录 x 3 个文件 = 9 条
-            assert len(result) == 9
-            assert all(f.endswith(("python3", "ls", "nvidia-smi")) for f in result)
+            # 2 (bin) + 1 (usr/bin) + 1 (usr/local/bin) + 1 (tools) = 5 files
+            assert len(result) == 5
+            assert all(
+                f.endswith(("python3", "ls", "gcc", "node", "kubectl.exe"))
+                for f in result
+            )
 
-    def test_linux_no_bin_dirs(self):
-        """Linux 下 bin 目录不存在时应返回空列表。"""
+    def test_no_dirs_exist(self):
+        """所有目录都不存在时应返回空列表。"""
         with (
-            patch("reasoning_env_test.detectors.software.software.sys.platform", "linux"),
             patch("os.path.isdir", return_value=False),
         ):
             result = scan_bin_dirs()
             assert result == []
 
-    def test_non_linux_scan_path(self):
-        """非 Linux 下降级为扫描 PATH 目录。"""
+    def test_path_dirs_not_exist_only_bin_dirs(self):
+        """PATH 目录不存在时只返回 BIN_DIRS 中的文件。"""
         with (
-            patch("reasoning_env_test.detectors.software.software.sys.platform", "win32"),
-            patch.dict(os.environ, {"PATH": "C:\\windows;C:\\tools"}, clear=True),
-            patch("os.path.isdir", return_value=True),
-            patch("os.listdir", side_effect=[["python.exe", "docker.exe"], ["kubectl.exe"]]),
+            patch("os.path.isdir", side_effect=lambda d: d in BIN_DIRS),
+            patch("os.listdir", side_effect=[
+                ["python3"],  # /bin
+                ["gcc"],      # /usr/bin
+                ["node"],     # /usr/local/bin
+            ]),
             patch("os.access", return_value=True),
+            patch.dict(os.environ, {"PATH": "Z:\\nonexist"}, clear=True),
         ):
             result = scan_bin_dirs()
             assert len(result) == 3
 
-    def test_non_linux_no_path_dirs(self):
-        """非 Linux 下 PATH 目录均不存在时应返回空列表。"""
+    def test_permission_error_skipped(self):
+        """PermissionError 应被静默跳过。"""
         with (
-            patch("reasoning_env_test.detectors.software.software.sys.platform", "win32"),
-            patch("os.path.isdir", return_value=False),
+            patch("os.path.isdir", return_value=True),
+            patch("os.listdir", side_effect=PermissionError("denied")),
+            patch.dict(os.environ, {"PATH": ""}, clear=True),
         ):
             result = scan_bin_dirs()
             assert result == []
 
-    def test_linux_permission_error_skipped(self):
-        """PermissionError 应被静默跳过。"""
+    def test_duplicate_dirs_deduplicated(self):
+        """BIN_DIRS 与 PATH 中重复的目录应去重。"""
         with (
-            patch("reasoning_env_test.detectors.software.software.sys.platform", "linux"),
             patch("os.path.isdir", return_value=True),
-            patch("os.listdir", side_effect=PermissionError("denied")),
+            patch("os.listdir", return_value=["python3"]),
+            patch("os.access", return_value=True),
+            # /usr/bin 已在 BIN_DIRS 中
+            patch.dict(os.environ, {"PATH": "/usr/bin;/other"}, clear=True),
         ):
             result = scan_bin_dirs()
-            assert result == []
+            # 3 BIN_DIRS + 1 new PATH dir (/other) = 4, each has 1 file
+            assert len(result) == 4
 
 
 # ============================================================
@@ -129,6 +145,46 @@ class TestDetectCommands:
         with patch("shutil.which", return_value=None):
             result = detect_commands()
             assert set(result.keys()) == set(COMMANDS)
+
+
+# ============================================================
+# detect_hardware_tools
+# ============================================================
+
+
+class TestDetectHardwareTools:
+    def test_all_tools_found(self):
+        """所有工具都存在时应全部返回 True。"""
+        with patch("shutil.which", return_value="/usr/bin/tool"):
+            result = detect_hardware_tools()
+            for tool in HARDWARE_TOOLS:
+                assert result[tool] is True, f"{tool} should be True"
+
+    def test_all_tools_missing(self):
+        """所有工具都不存在时应全部返回 False。"""
+        with patch("shutil.which", return_value=None):
+            result = detect_hardware_tools()
+            for tool in HARDWARE_TOOLS:
+                assert result[tool] is False, f"{tool} should be False"
+
+    def test_partial_tools(self):
+        """部分工具存在时只返回对应 True。"""
+
+        def fake_which(cmd, **kwargs):
+            return "/usr/bin/" + cmd if cmd in ("nvidia-smi", "lspci") else None
+
+        with patch("shutil.which", side_effect=fake_which):
+            result = detect_hardware_tools()
+            assert result["nvidia-smi"] is True
+            assert result["lspci"] is True
+            assert result["dmidecode"] is False
+            assert result["xpu-smi"] is False
+
+    def test_result_keys_match_hardware_tools_list(self):
+        """返回的 keys 应严格等于 HARDWARE_TOOLS 列表。"""
+        with patch("shutil.which", return_value=None):
+            result = detect_hardware_tools()
+            assert set(result.keys()) == set(HARDWARE_TOOLS)
 
 
 # ============================================================
@@ -390,6 +446,8 @@ class TestDetectAll:
             "python_ok",
             "cuda_version",
             "rocm_version",
+            "all_commands",
+            "hardware_tools",
         }
 
         with patch.multiple(
@@ -401,6 +459,10 @@ class TestDetectAll:
             detect_python=MagicMock(return_value=("3.12.0", True)),
             detect_cuda=MagicMock(return_value=None),
             detect_rocm=MagicMock(return_value=None),
+            scan_bin_dirs=MagicMock(return_value=["/usr/bin/python3"]),
+            detect_hardware_tools=MagicMock(
+                return_value={t: False for t in HARDWARE_TOOLS}
+            ),
         ):
             result = detect_all()
             assert set(result.keys()) == required_keys
@@ -416,6 +478,10 @@ class TestDetectAll:
             detect_python=MagicMock(return_value=("3.12.0", True)),
             detect_cuda=MagicMock(return_value="12.4"),
             detect_rocm=MagicMock(return_value="6.1.0"),
+            scan_bin_dirs=MagicMock(return_value=["/usr/bin/python3", "/usr/bin/ls"]),
+            detect_hardware_tools=MagicMock(
+                return_value={t: False for t in HARDWARE_TOOLS}
+            ),
         ):
             result = detect_all()
             assert isinstance(result["commands"], dict)
@@ -424,3 +490,6 @@ class TestDetectAll:
             assert isinstance(result["python_ok"], bool)
             assert isinstance(result["cuda_version"], (str, type(None)))
             assert isinstance(result["rocm_version"], (str, type(None)))
+            assert isinstance(result["all_commands"], list)
+            assert isinstance(result["hardware_tools"], dict)
+            assert all(isinstance(v, bool) for v in result["hardware_tools"].values())

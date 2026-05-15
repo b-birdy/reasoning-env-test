@@ -2,8 +2,9 @@
 软件与推理框架检测模块
 
 检测内容:
-  - /bin 等目录扫描（非 Linux 下降级为 PATH 扫描）
+  - 扫描 BIN_DIRS + PATH 下的可执行文件
   - 常用命令检测（python, nvidia-smi, docker 等）
+  - 硬件管理工具检测（xpu-smi, dmidecode, lspci 等）
   - 推理框架检测（vLLM, TGI, Ollama, PyTorch 等）
   - Python 版本检查（>= 3.8）
   - CUDA / ROCm 版本
@@ -32,9 +33,37 @@ COMMANDS = [
     "nvidia-smi",
     "rocm-smi",
     "npu-smi",
+    "xpu-smi",
     "docker",
     "kubectl",
     "ollama",
+    "ip",
+    "ethtool",
+    "rdma",
+    "ibstat",
+    "lspci",
+    "dmidecode",
+    "lscpu",
+    "lsblk",
+    "lshw",
+    "numactl",
+    "perf",
+]
+
+# 待检测硬件管理工具（与 COMMANDS 独立，用于 hardware_tools 字段）
+HARDWARE_TOOLS = [
+    "xpu-smi",
+    "nvidia-smi",
+    "rocm-smi",
+    "npu-smi",
+    "dmidecode",
+    "lspci",
+    "lshw",
+    "lscpu",
+    "ip",
+    "ethtool",
+    "rdma",
+    "ibstat",
 ]
 
 # 推理框架 pip 包名 -> 输出 key
@@ -55,39 +84,31 @@ FRAMEWORKS = {
 
 
 def scan_bin_dirs() -> list[str]:
-    """扫描常见的 bin 目录，返回所有可执行文件列表。
+    """扫描常见的 bin 目录和 PATH，返回所有可执行文件列表。
 
-    在 Linux 上检查 /bin, /usr/bin, /usr/local/bin；
-    在其他平台降级为扫描 PATH 中的所有目录。
+    同时扫描 BIN_DIRS 和 PATH 中的所有目录，去重后返回。
     """
     found: list[str] = []
+    seen: set[str] = set()
+    dirs_to_scan: list[str] = list(BIN_DIRS)
 
-    if sys.platform == "linux" or sys.platform == "linux2":
-        for d in BIN_DIRS:
-            if os.path.isdir(d):
-                try:
-                    found.extend(
-                        os.path.join(d, f)
-                        for f in os.listdir(d)
-                        if os.access(os.path.join(d, f), os.X_OK)
-                    )
-                except PermissionError:
-                    continue
-    else:
-        # 非 Linux：遍历 PATH
-        path_dirs = os.environ.get("PATH", "").split(os.pathsep)
-        seen = set()
-        for d in path_dirs:
-            if not d or not os.path.isdir(d):
-                continue
-            try:
-                for f in os.listdir(d):
-                    fp = os.path.join(d, f)
-                    if fp not in seen and os.access(fp, os.X_OK):
-                        found.append(fp)
-                        seen.add(fp)
-            except PermissionError:
-                continue
+    # 追加 PATH 中的目录（去重）
+    path_dirs = os.environ.get("PATH", "").split(os.pathsep)
+    for d in path_dirs:
+        if d and d not in dirs_to_scan:
+            dirs_to_scan.append(d)
+
+    for d in dirs_to_scan:
+        if not os.path.isdir(d):
+            continue
+        try:
+            for f in os.listdir(d):
+                fp = os.path.join(d, f)
+                if fp not in seen and os.access(fp, os.X_OK):
+                    found.append(fp)
+                    seen.add(fp)
+        except PermissionError:
+            continue
 
     return sorted(found)
 
@@ -103,6 +124,11 @@ def detect_commands() -> dict[str, bool]:
     for cmd in COMMANDS:
         result[cmd] = shutil.which(cmd) is not None
     return result
+
+
+def detect_hardware_tools() -> dict[str, bool]:
+    """检测硬件管理工具是否存在于当前环境中。"""
+    return {tool: shutil.which(tool) is not None for tool in HARDWARE_TOOLS}
 
 
 # ============================================================
@@ -298,6 +324,8 @@ def detect_all() -> dict:
             "python_ok": bool,
             "cuda_version": str | None,
             "rocm_version": str | None,
+            "all_commands": list[str],
+            "hardware_tools": {"name": bool, ...},
         }
     """
     return {
@@ -307,4 +335,6 @@ def detect_all() -> dict:
         "python_ok": detect_python()[1],
         "cuda_version": detect_cuda(),
         "rocm_version": detect_rocm(),
+        "all_commands": scan_bin_dirs(),
+        "hardware_tools": detect_hardware_tools(),
     }

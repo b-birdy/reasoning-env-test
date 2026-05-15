@@ -282,22 +282,78 @@ Memory: 32768 MB Total
 
 class TestKunlunxinDetector:
     def test_detect_no_kunlunxin_hardware(self):
-        """无昆仑芯 XPU 时返回空结果。"""
+        """无昆仑芯 XPU（xpu-smi 命令不存在）时返回空结果。"""
         with patch("reasoning_env_test.detectors.hardware.kunlunxin.shutil.which", return_value=None):
             detector = KunlunxinDetector()
             result = detector.detect()
             assert result["type"] == "kunlunxin"
             assert result["model"] == ""
             assert result["memory_total_gb"] == 0.0
+            assert result["compute_units"] == 0
 
     @patch("reasoning_env_test.detectors.hardware.kunlunxin.shutil.which", return_value="/usr/bin/xpu-smi")
-    def test_detect_xpu_smi_found(self, mock_which):
-        """检测到 xpu-smi 命令时返回占位信息。"""
+    @patch("reasoning_env_test.detectors.hardware.kunlunxin.subprocess.check_output")
+    def test_detect_key_value_format(self, mock_check_output, mock_which):
+        """解析 xpu-smi query -a key-value 格式输出。"""
+        mock_output = """Device Index: 0
+Device Name: Kunlun XPU P800
+Memory Total: 16384 MB
+
+Device Index: 1
+Device Name: Kunlun XPU P800
+Memory Total: 16384 MB
+
+Device Index: 2
+Device Name: Kunlun XPU P800
+Memory Total: 16384 MB
+"""
+        mock_check_output.return_value = mock_output
+        detector = KunlunxinDetector()
+        result = detector.detect()
+
+        assert result["type"] == "kunlunxin"
+        assert result["model"] == "Kunlun XPU P800"
+        assert result["memory_total_gb"] == 16.0  # 16384 MB -> 16 GB
+        assert result["compute_units"] == 3
+        assert result["details"]["xpu_count"] == 3
+        assert len(result["details"]["xpus"]) == 3
+        assert result["details"]["xpus"][0]["index"] == 0
+        assert result["details"]["xpus"][2]["memory_total_gb"] == 16.0
+
+    @patch("reasoning_env_test.detectors.hardware.kunlunxin.shutil.which", return_value="/usr/bin/xpu-smi")
+    @patch("reasoning_env_test.detectors.hardware.kunlunxin.subprocess.check_output")
+    def test_detect_table_format(self, mock_check_output, mock_which):
+        """回退解析 xpu-smi query table 格式输出（key-value 失败时）。"""
+        # 第一次调用（key-value）失败，第二次（table）成功
+        mock_check_output.side_effect = [
+            FileNotFoundError,  # key-value 格式调用失败
+            """+--------+------------------+--------------+
+| DevID  | Name             | Memory(MB)   |
++--------+------------------+--------------+
+| 0      | Kunlun XPU P800  | 16384        |
+| 1      | Kunlun XPU P800  | 16384        |
++--------+------------------+--------------+
+""",
+        ]
+        detector = KunlunxinDetector()
+        result = detector.detect()
+
+        assert result["type"] == "kunlunxin"
+        assert result["model"] == "Kunlun XPU P800"
+        assert result["memory_total_gb"] == 16.0
+        assert result["compute_units"] == 2
+        assert result["details"]["xpu_count"] == 2
+
+    @patch("reasoning_env_test.detectors.hardware.kunlunxin.shutil.which", return_value="/usr/bin/xpu-smi")
+    @patch("reasoning_env_test.detectors.hardware.kunlunxin.subprocess.check_output", side_effect=FileNotFoundError)
+    def test_xpu_smi_fails_gracefully(self, mock_check_output, mock_which):
+        """xpu-smi 所有命令失败时返回空结果。"""
         detector = KunlunxinDetector()
         result = detector.detect()
         assert result["type"] == "kunlunxin"
-        assert "placeholder" in result["model"].lower()
-        assert result["details"].get("command_found") == "xpu-smi"
+        assert result["model"] == ""
+        assert result["memory_total_gb"] == 0.0
+        assert result["compute_units"] == 0
 
 
 # ============================================================
