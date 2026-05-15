@@ -69,12 +69,31 @@ HARDWARE_TOOLS = [
 # 推理框架 pip 包名 -> 输出 key
 FRAMEWORKS = {
     "vllm": "vllm",
+    "sglang": "sglang",
     "text-generation": "text_generation",
     "ollama": "ollama",
     "tensorrt_llm": "tensorrt_llm",
     "onnxruntime": "onnxruntime",
     "torch": "torch",
     "tensorflow": "tensorflow",
+    "transformers": "transformers",
+    "accelerate": "accelerate",
+    "deepspeed": "deepspeed",
+    "flash-attn": "flash_attn",
+    "xformers": "xformers",
+    "bitsandbytes": "bitsandbytes",
+    "peft": "peft",
+}
+
+# 通信库 pip 包名 -> 输出 key 及别名
+COMM_LIBS = {
+    "nccl": "nccl",
+    "torch_nccl": "torch_nccl",
+    "hccl": "hccl",
+    "bkcl": "bkcl",
+    "xccl": "xccl",
+    "msccl": "msccl",
+    "rccl": "rccl",
 }
 
 
@@ -309,6 +328,98 @@ def detect_rocm() -> Optional[str]:
 
 
 # ============================================================
+# Docker 版本检测
+# ============================================================
+
+
+def detect_docker_version() -> Optional[str]:
+    """检测 Docker 版本。"""
+    path = shutil.which("docker")
+    if not path:
+        return None
+    try:
+        result = subprocess.run(
+            [path, "version", "--format", "{{.Server.Version}}"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            ver = result.stdout.strip()
+            if ver:
+                return ver
+    except Exception:
+        pass
+    # 回退: docker --version
+    try:
+        result = subprocess.run(
+            [path, "--version"],
+            capture_output=True, text=True, timeout=5,
+        )
+        out = (result.stdout or result.stderr).strip()
+        if out:
+            # 提取版本号 "Docker version 24.0.7, build ..."
+            m = re.search(r"(\d+\.\d+\.\d+)", out)
+            if m:
+                return m.group(1)
+    except Exception:
+        pass
+    return None
+
+
+# ============================================================
+# 通信库检测 (NCCL / HCCL / BKCL / RCCL)
+# ============================================================
+
+
+def detect_comm_libs() -> dict[str, Optional[str]]:
+    """检测 GPU 通信库版本。
+
+    优先通过 pip 包检测，降级到 ldconfig / 路径扫描。
+
+    Returns:
+        {"nccl": "2.20.5" | None, "hccl": ..., "bkcl": ..., "rccl": ...}
+    """
+    pip_pkgs = _get_pip_packages()
+    result: dict[str, Optional[str]] = {
+        "nccl": None,
+        "hccl": None,
+        "bkcl": None,
+        "rccl": None,
+        "xccl": None,
+    }
+
+    # 1) pip 包
+    for pkg_name, key in COMM_LIBS.items():
+        pkg_lower = pkg_name.lower()
+        if pkg_lower in pip_pkgs:
+            result[key] = pip_pkgs[pkg_lower]
+
+    # 2) 路径 / 环境变量
+    _detect_comm_lib_path("nccl", "/usr/lib/x86_64-linux-gnu/libnccl.so", result)
+    _detect_comm_lib_path("hccl", "/usr/local/Ascend/ascend-toolkit/latest/atc/lib64/libhccl.so", result)
+    _detect_comm_lib_path("bkcl", "/usr/lib/x86_64-linux-gnu/libbkcl.so", result)
+    _detect_comm_lib_path("rccl", "/opt/rocm/lib/librccl.so", result)
+
+    return result
+
+
+def _detect_comm_lib_path(key: str, so_path: str, result: dict) -> None:
+    """通过 .so 文件版本检测通信库（降级方案）。"""
+    if result.get(key):
+        return  # pip 已找到
+    try:
+        if os.path.exists(so_path):
+            # readlink -f 获取真实路径
+            real = os.path.realpath(so_path)
+            m = re.search(r"(\d+\.\d+\.\d+)", real)
+            if m:
+                result[key] = m.group(1)
+            else:
+                result[key] = "detected"
+    except Exception:
+        pass
+
+
+# ============================================================
 # 统一入口
 # ============================================================
 
@@ -324,6 +435,8 @@ def detect_all() -> dict:
             "python_ok": bool,
             "cuda_version": str | None,
             "rocm_version": str | None,
+            "docker_version": str | None,
+            "comm_libs": {"nccl": ..., "hccl": ..., "bkcl": ..., "rccl": ...},
             "all_commands": list[str],
             "hardware_tools": {"name": bool, ...},
         }
@@ -335,6 +448,8 @@ def detect_all() -> dict:
         "python_ok": detect_python()[1],
         "cuda_version": detect_cuda(),
         "rocm_version": detect_rocm(),
+        "docker_version": detect_docker_version(),
+        "comm_libs": detect_comm_libs(),
         "all_commands": scan_bin_dirs(),
         "hardware_tools": detect_hardware_tools(),
     }

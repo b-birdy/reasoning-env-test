@@ -22,6 +22,8 @@ class KunlunxinDetector(BaseHardwareDetector):
 
     def detect(self) -> Dict[str, Any]:
         result = self._empty_result("kunlunxin")
+        self._driver_version = ""
+        self._xpu_rt_version = ""
 
         if not shutil.which("xpu-smi"):
             return result
@@ -42,6 +44,8 @@ class KunlunxinDetector(BaseHardwareDetector):
         result["details"] = {
             "xpu_count": len(xpus),
             "xpus": xpus,
+            "driver_version": self._driver_version,
+            "xpu_rt_version": self._xpu_rt_version,
         }
         return result
 
@@ -103,8 +107,18 @@ class KunlunxinDetector(BaseHardwareDetector):
                 in_memory_section = False
                 continue
 
-            # ── 没有活跃 XPU 块时，只跟踪 Memory Usage 切换 ──
+            # ── 没有活跃 XPU 块时 ──
             if current is None:
+                # 解析头部元数据（Driver Version / XPU-RT Version）
+                if ":" in stripped:
+                    hdr_match = re.match(r"^\s*(Driver Version|XPU-RT Version)\s*:\s*(.+)$", line)
+                    if hdr_match:
+                        key = hdr_match.group(1).strip()
+                        val = hdr_match.group(2).strip()
+                        if "Driver Version" in key:
+                            self._driver_version = val
+                        elif "XPU-RT Version" in key:
+                            self._xpu_rt_version = val
                 if stripped.rstrip(":") == "Memory Usage":
                     in_memory_section = True
                 elif stripped and ":" not in stripped and not stripped.startswith("="):

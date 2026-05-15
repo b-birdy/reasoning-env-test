@@ -11,6 +11,7 @@ from reasoning_env_test.detectors.software.software import (
     COMMANDS,
     FRAMEWORKS,
     HARDWARE_TOOLS,
+    COMM_LIBS,
     scan_bin_dirs,
     detect_commands,
     detect_hardware_tools,
@@ -18,6 +19,8 @@ from reasoning_env_test.detectors.software.software import (
     detect_python,
     detect_cuda,
     detect_rocm,
+    detect_docker_version,
+    detect_comm_libs,
     detect_all,
 )
 
@@ -197,12 +200,20 @@ class TestDetectFrameworks:
         """所有框架通过 pip 包检测到。"""
         fake_pkgs = {
             "vllm": "0.6.0",
+            "sglang": "0.4.0",
             "text-generation": "2.0.0",
             "ollama": "0.3.0",
             "tensorrt_llm": "0.12.0",
             "onnxruntime": "1.18.0",
             "torch": "2.5.0",
             "tensorflow": "2.17.0",
+            "transformers": "4.44.0",
+            "accelerate": "0.33.0",
+            "deepspeed": "0.14.0",
+            "flash-attn": "2.6.0",
+            "xformers": "0.0.27",
+            "bitsandbytes": "0.43.0",
+            "peft": "0.12.0",
         }
         with patch(
             "reasoning_env_test.detectors.software.software._get_pip_packages",
@@ -432,6 +443,122 @@ class TestDetectRocm:
 
 
 # ============================================================
+# detect_docker_version
+# ============================================================
+
+
+class TestDetectDockerVersion:
+    def test_docker_found_via_format(self):
+        """Docker 存在且 docker version --format 成功。"""
+        with (
+            patch("shutil.which", return_value="/usr/bin/docker"),
+            patch(
+                "subprocess.run",
+                return_value=MagicMock(
+                    stdout="24.0.7\n", stderr="", returncode=0
+                ),
+            ),
+        ):
+            ver = detect_docker_version()
+            assert ver == "24.0.7"
+
+    def test_docker_version_fallback(self):
+        """docker version --format 失败时回退到 docker --version。"""
+        with (
+            patch("shutil.which", return_value="/usr/bin/docker"),
+            patch(
+                "subprocess.run",
+                side_effect=[
+                    MagicMock(stdout="", stderr="error", returncode=1),
+                    MagicMock(
+                        stdout="Docker version 24.0.7, build afdd53b\n",
+                        stderr="",
+                        returncode=0,
+                    ),
+                ],
+            ),
+        ):
+            ver = detect_docker_version()
+            assert ver == "24.0.7"
+
+    def test_docker_not_found(self):
+        """Docker 不存在时返回 None。"""
+        with patch("shutil.which", return_value=None):
+            ver = detect_docker_version()
+            assert ver is None
+
+    def test_docker_exception_handled(self):
+        """执行异常时应返回 None。"""
+        with (
+            patch("shutil.which", return_value="/usr/bin/docker"),
+            patch("subprocess.run", side_effect=FileNotFoundError("not found")),
+        ):
+            ver = detect_docker_version()
+            assert ver is None
+
+
+# ============================================================
+# detect_comm_libs
+# ============================================================
+
+
+class TestDetectCommLibs:
+    def test_all_comm_libs_via_pip(self):
+        """所有通信库通过 pip 包检测到。"""
+        fake_pkgs = {
+            "nccl": "2.20.5",
+            "torch_nccl": "2.20.5",
+            "hccl": "1.0.0",
+            "bkcl": "2.3.0",
+            "xccl": "1.0.0",
+            "msccl": "1.1.0",
+            "rccl": "2.18.0",
+        }
+        with patch(
+            "reasoning_env_test.detectors.software.software._get_pip_packages",
+            return_value=fake_pkgs,
+        ):
+            result = detect_comm_libs()
+            assert result["nccl"] == "2.20.5"
+            assert result["hccl"] == "1.0.0"
+            assert result["bkcl"] == "2.3.0"
+            assert result["rccl"] == "2.18.0"
+            assert result["xccl"] == "1.0.0"
+
+    def test_no_comm_libs_installed(self):
+        """没有通信库安装时应全部返回 None。"""
+        with patch(
+            "reasoning_env_test.detectors.software.software._get_pip_packages",
+            return_value={},
+        ):
+            result = detect_comm_libs()
+            for key in ("nccl", "hccl", "bkcl", "rccl", "xccl"):
+                assert result[key] is None, f"{key} should be None"
+
+    def test_comm_lib_detected_via_path(self):
+        """pip 检测不到时回退到 .so 路径扫描。"""
+        with (
+            patch(
+                "reasoning_env_test.detectors.software.software._get_pip_packages",
+                return_value={},
+            ),
+            patch("os.path.exists", return_value=True),
+            patch("os.path.realpath", return_value="/usr/lib/x86_64-linux-gnu/libnccl.so.2.20.5"),
+        ):
+            result = detect_comm_libs()
+            assert result["nccl"] == "2.20.5"
+
+    def test_result_keys_match_expected(self):
+        """返回的 keys 应包含所有预期的通信库。"""
+        with patch(
+            "reasoning_env_test.detectors.software.software._get_pip_packages",
+            return_value={},
+        ):
+            result = detect_comm_libs()
+            assert set(result.keys()) == {"nccl", "hccl", "bkcl", "rccl", "xccl"}
+
+
+# ============================================================
 # detect_all
 # ============================================================
 
@@ -446,6 +573,8 @@ class TestDetectAll:
             "python_ok",
             "cuda_version",
             "rocm_version",
+            "docker_version",
+            "comm_libs",
             "all_commands",
             "hardware_tools",
         }
@@ -459,6 +588,10 @@ class TestDetectAll:
             detect_python=MagicMock(return_value=("3.12.0", True)),
             detect_cuda=MagicMock(return_value=None),
             detect_rocm=MagicMock(return_value=None),
+            detect_docker_version=MagicMock(return_value=None),
+            detect_comm_libs=MagicMock(
+                return_value={"nccl": None, "hccl": None, "bkcl": None, "rccl": None, "xccl": None}
+            ),
             scan_bin_dirs=MagicMock(return_value=["/usr/bin/python3"]),
             detect_hardware_tools=MagicMock(
                 return_value={t: False for t in HARDWARE_TOOLS}
@@ -478,6 +611,10 @@ class TestDetectAll:
             detect_python=MagicMock(return_value=("3.12.0", True)),
             detect_cuda=MagicMock(return_value="12.4"),
             detect_rocm=MagicMock(return_value="6.1.0"),
+            detect_docker_version=MagicMock(return_value="24.0.7"),
+            detect_comm_libs=MagicMock(
+                return_value={"nccl": "2.20.5", "hccl": None, "bkcl": None, "rccl": None, "xccl": None}
+            ),
             scan_bin_dirs=MagicMock(return_value=["/usr/bin/python3", "/usr/bin/ls"]),
             detect_hardware_tools=MagicMock(
                 return_value={t: False for t in HARDWARE_TOOLS}
@@ -490,6 +627,9 @@ class TestDetectAll:
             assert isinstance(result["python_ok"], bool)
             assert isinstance(result["cuda_version"], (str, type(None)))
             assert isinstance(result["rocm_version"], (str, type(None)))
+            assert isinstance(result["docker_version"], (str, type(None)))
+            assert isinstance(result["comm_libs"], dict)
             assert isinstance(result["all_commands"], list)
             assert isinstance(result["hardware_tools"], dict)
             assert all(isinstance(v, bool) for v in result["hardware_tools"].values())
+            assert all(isinstance(v, (str, type(None))) for v in result["comm_libs"].values())
