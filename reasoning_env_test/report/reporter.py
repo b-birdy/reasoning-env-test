@@ -1017,7 +1017,7 @@ def generate_report(
         "（按参数量从大到小排序）。"
     )
     lines.append("")
-    lines.append(_build_recommendation_section(recommendations))
+    lines.append(_section_recommendation(recommendations))
     lines.append("")
     lines.append("---")
     lines.append("")
@@ -1029,7 +1029,7 @@ def generate_report(
     lines.append("")
     lines.append("以下为各并发级别下的理论性能估算值。")
     lines.append("")
-    lines.append(_build_performance_section(performance))
+    lines.append(_section_performance(performance))
     lines.append("")
     lines.append("---")
     lines.append("")

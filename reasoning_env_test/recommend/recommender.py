@@ -42,9 +42,17 @@ class ModelRecommender:
 
         for hw in self.hardware_results:
             hw_type = hw["type"]
-            if hw_type in gpu_types and hw["memory_total_gb"] > 0:
-                if hw_type not in gpu_groups:
-                    gpu_groups[hw_type] = []
+            if hw_type not in gpu_types or hw["memory_total_gb"] <= 0:
+                continue
+
+            # 支持多卡（xpu_count/gpu_count）
+            details = hw.get("details", {})
+            gpu_count = details.get("gpu_count", 0) or details.get("xpu_count", 0) or 1
+
+            if hw_type not in gpu_groups:
+                gpu_groups[hw_type] = []
+
+            for _ in range(gpu_count):
                 gpu_groups[hw_type].append(hw)
                 total_gpu_memory += hw["memory_total_gb"]
 
